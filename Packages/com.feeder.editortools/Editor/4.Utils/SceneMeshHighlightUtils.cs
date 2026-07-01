@@ -32,6 +32,41 @@ namespace Feeder
             return result;
         }
 
+        public static List<GameObject> FindGameObjectsWithAnyMesh(Scene scene, IReadOnlyCollection<Mesh> meshes)
+        {
+            if (!scene.IsValid())
+                throw new InvalidOperationException("scene is not valid.");
+            if (meshes == null)
+                throw new InvalidOperationException("meshes is null.");
+
+            HashSet<Mesh> meshSet = new HashSet<Mesh>();
+            foreach (Mesh mesh in meshes)
+            {
+                if (mesh != null)
+                    meshSet.Add(mesh);
+            }
+
+            var result = new List<GameObject>();
+            if (meshSet.Count == 0)
+                return result;
+
+            HashSet<GameObject> seen = new HashSet<GameObject>();
+            var roots = scene.GetRootGameObjects();
+            for (int i = 0; i < roots.Length; i++)
+            {
+                var filters = roots[i].GetComponentsInChildren<MeshFilter>(true);
+                for (int j = 0; j < filters.Length; j++)
+                {
+                    MeshFilter filter = filters[j];
+                    if (filter == null || !meshSet.Contains(filter.sharedMesh)) continue;
+                    if (seen.Add(filter.gameObject))
+                        result.Add(filter.gameObject);
+                }
+            }
+
+            return result;
+        }
+
         // keepVisible stay visible+pickable; MeshHighlightDrawer holders are shown but not pickable so they don't block selection
         public static void IsolateGameObjects(Scene scene, IReadOnlyList<GameObject> keepVisible)
         {

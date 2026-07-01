@@ -9,11 +9,12 @@ namespace Feeder
     public static class FAlignMeshSceneOverlay
     {
         private const int WindowId = 999999;
-        private const float WindowWidth = 260f;
-        private const float WindowHeight = 160f;
+        private const float WindowWidth = 320f;
+        private const float WindowHeight = 240f;
         private const float HeaderHeight = 24f;
         private const float NavButtonWidth = 30f;
         private const float CloseButtonSize = 18f;
+        private const string GizmoObjectName = "__Feeder_AlignMesh_Gizmo";
 
         private static bool _showWindow;
         private static Rect _windowRect = new Rect(0, 0, WindowWidth, WindowHeight);
@@ -23,9 +24,15 @@ namespace Feeder
         private static readonly List<GameObject> SceneMeshCandidates = new List<GameObject>();
         private static GameObject _compareMeshObject;
         private static int _currentIndex = -1;
+        private static string _autoAlignStatus = "Auto Align has not run.";
+        private static bool _autoAlignStatusIsError;
+        private static System.Action _onNextGroup;
+        private static GameObject _gizmoObject;
+        private static bool _syncingGizmoObject;
 
         private static GUIStyle _headerStyle;
         private static GUIStyle _bodyStyle;
+        private static GUIStyle _statusStyle;
 
         [InitializeOnLoadMethod]
         private static void Init()
@@ -34,17 +41,22 @@ namespace Feeder
             AssemblyReloadEvents.afterAssemblyReload += OnAfterAssemblyReload;
         }
 
-        public static void OpenWithSceneMeshCandidates(List<GameObject> candidates, Mesh leftPreviewMesh)
+        public static void OpenWithSceneCandidates(List<GameObject> candidates, Mesh leftPreviewMesh, System.Action onNextGroup = null, bool autoAlignOnce = false)
         {
             if (candidates == null) return;
+            DestroyGizmoObject();
             SceneMeshCandidates.Clear();
             SceneMeshCandidates.AddRange(candidates);
             _showWindow = true;
+            _onNextGroup = onNextGroup;
             FAlignMeshSceneGizmoDrawer.SetSharedMesh(leftPreviewMesh);
             FAlignMeshSceneGizmoDrawer.SetDrawingEnabled(true);
             _currentIndex = SceneMeshCandidates.Count > 0 ? 0 : -1;
             _compareMeshObject = (_currentIndex >= 0 && _currentIndex < SceneMeshCandidates.Count) ? SceneMeshCandidates[_currentIndex] : null;
+            SetAutoAlignStatus("Ready. Use Auto Align to estimate the pose, then Apply Mesh.", false);
             SyncGizmoPoseFromCompareObject(_compareMeshObject);
+            if (autoAlignOnce)
+                ApplyAutoAlignToHighlightDrawer();
             FocusSceneViewOn(_compareMeshObject);
             SceneView.RepaintAll();
         }
@@ -52,6 +64,7 @@ namespace Feeder
         private static void OnAfterAssemblyReload()
         {
             DestroyLegacyMeshHighlightDrawerHoldersInLoadedScenes();
+            DestroyGizmoObject();
             FAlignMeshSceneGizmoDrawer.Clear();
             _showWindow = false;
         }
@@ -75,12 +88,14 @@ namespace Feeder
         private static void CloseOverlay()
         {
             _showWindow = false;
+            DestroyGizmoObject();
             FAlignMeshSceneGizmoDrawer.Clear();
         }
 
         private static void SyncGizmoPoseFromCompareObject(GameObject source)
         {
             FAlignMeshSceneGizmoDrawer.CopyPoseFrom(source);
+            SyncGizmoObjectFromDrawer();
         }
 
         private static void FocusSceneViewOn(GameObject go)
@@ -99,11 +114,16 @@ namespace Feeder
                 alignment = TextAnchor.MiddleCenter
             };
             _bodyStyle = new GUIStyle(EditorStyles.helpBox) { padding = new RectOffset(8, 8, 8, 8) };
+            _statusStyle = new GUIStyle(EditorStyles.wordWrappedMiniLabel)
+            {
+                padding = new RectOffset(4, 4, 2, 2)
+            };
         }
 
         private static void OnSceneGUI(SceneView sceneView)
         {
             if (!_showWindow) return;
+            SyncDrawerFromGizmoObjectIfNeeded();
             InitStyles();
             if (!_initializedPosition)
             {
@@ -126,6 +146,7 @@ namespace Feeder
             DrawSceneMeshCandidatesList();
             DrawCompareControls();
             DrawActionButtons();
+            DrawAutoAlignStatus();
             GUILayout.EndVertical();
             GUI.DragWindow(_headerRect);
         }
@@ -163,7 +184,10 @@ namespace Feeder
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("<", GUILayout.Width(NavButtonWidth)))
                 SelectPrevCandidate();
-            _compareMeshObject = (GameObject)EditorGUILayout.ObjectField(_compareMeshObject, typeof(GameObject), true);
+            EditorGUI.BeginChangeCheck();
+            GameObject selected = (GameObject)EditorGUILayout.ObjectField(_compareMeshObject, typeof(GameObject), true);
+            if (EditorGUI.EndChangeCheck())
+                SelectCandidateObject(selected);
             if (GUILayout.Button(">", GUILayout.Width(NavButtonWidth)))
                 SelectNextCandidate();
             GUILayout.EndHorizontal();
@@ -173,17 +197,44 @@ namespace Feeder
         {
             GUILayout.Space(4f);
             GUILayout.BeginHorizontal();
-            if (GUILayout.Button("AlignMeshManual"))
+            if (GUILayout.Button("Auto Align"))
             {
-                ApplyAlignMeshFromPreviewRotationDelta();
+                ApplyAutoAlignToHighlightDrawer();
             }
-            if (GUILayout.Button("AlignMeshICP"))
+            if (GUILayout.Button("ICP"))
             {
                 ApplyTrimIcpToHighlightDrawer();
             }
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            string gizmoButtonLabel = _gizmoObject == null ? "Show Gizmo Object" : "Hide Gizmo Object";
+            if (GUILayout.Button(gizmoButtonLabel))
+                ToggleGizmoObject();
             if (GUILayout.Button("ApplyMesh"))
                 ApplyMeshToCompareObject();
             GUILayout.EndHorizontal();
+
+            Color oldBg = GUI.backgroundColor;
+            GUI.backgroundColor = new Color(0.4f, 1f, 0.5f);
+            if (GUILayout.Button("Auto (Align + Apply All)", GUILayout.Height(24f)))
+                RunAutoAlignApplyAll();
+
+            using (new EditorGUI.DisabledScope(_onNextGroup == null))
+            {
+                GUI.backgroundColor = new Color(0.55f, 0.75f, 1f);
+                if (GUILayout.Button("Next Group ⏭", GUILayout.Height(22f)))
+                    _onNextGroup?.Invoke();
+            }
+            GUI.backgroundColor = oldBg;
+        }
+
+        private static void DrawAutoAlignStatus()
+        {
+            Color oldColor = GUI.contentColor;
+            GUI.contentColor = _autoAlignStatusIsError ? new Color(1f, 0.46f, 0.35f) : new Color(0.72f, 1f, 0.82f);
+            GUILayout.Label(_autoAlignStatus, _statusStyle);
+            GUI.contentColor = oldColor;
         }
 
         private static void ApplyMeshToCompareObject()
@@ -196,6 +247,7 @@ namespace Feeder
             MeshFilter mf = _compareMeshObject.GetComponent<MeshFilter>();
             if (mf == null) return;
 
+            Mesh oldMesh = mf.sharedMesh;
             Transform compareT = _compareMeshObject.transform;
             Transform parent = compareT.parent;
             Vector3 gizmoPosition = FAlignMeshSceneGizmoDrawer.Position;
@@ -234,25 +286,132 @@ namespace Feeder
                 else _currentIndex = Mathf.Clamp(_currentIndex, 0, SceneMeshCandidates.Count - 1);
             }
 
+            RemoveMeshFromTargetsIfNoCandidatesRemain(oldMesh);
+
+            if (SceneMeshCandidates.Count > 0 && _currentIndex >= 0)
+            {
+                _compareMeshObject = SceneMeshCandidates[_currentIndex];
+                SyncGizmoPoseFromCompareObject(_compareMeshObject);
+                OnCandidateChanged();
+                FocusSceneViewOn(_compareMeshObject);
+            }
+            else
+            {
+                _compareMeshObject = null;
+                DestroyGizmoObject();
+            }
+
             SceneView.RepaintAll();
         }
 
-        private static void ApplyAlignMeshFromPreviewRotationDelta()
+        private static void RemoveMeshFromTargetsIfNoCandidatesRemain(Mesh mesh)
         {
-            if (!FAlignMeshSceneGizmoDrawer.DrawingEnabled || _compareMeshObject == null) return;
+            if (mesh == null) return;
+            if (AnyCandidateUsesMesh(mesh)) return;
 
-            Vector3 leftEuler = FMeshPreviewDrawer.GetRotationEuler(FDeduplicateMeshTool.LeftPreviewSlotId);
-            Vector3 rightEuler = FMeshPreviewDrawer.GetRotationEuler(FDeduplicateMeshTool.RightPreviewSlotId);
+            FDataContainer data = FDataPersistenceService.GetOrCreateDataContainer();
+            int removedCount = data.TargetMeshes.RemoveAll(targetMesh => targetMesh == mesh);
+            if (removedCount <= 0) return;
 
-            Quaternion leftQ = Quaternion.Euler(leftEuler);
-            Quaternion rightQ = Quaternion.Euler(rightEuler);
-            Quaternion deltaQ = rightQ * Quaternion.Inverse(leftQ);
+            FDataPersistenceService.SaveData(data);
+            Debug.Log($"<color=cyan>[AlignMesh] Removed applied target mesh '{mesh.name}' from TargetMeshes because no scene candidates remain.</color>");
+            EditorWindow.focusedWindow?.Repaint();
+        }
 
-            Transform compareT = _compareMeshObject.transform;
-            Quaternion finalRotation = deltaQ * compareT.rotation;
+        private static bool AnyCandidateUsesMesh(Mesh mesh)
+        {
+            for (int i = 0; i < SceneMeshCandidates.Count; i++)
+            {
+                GameObject candidate = SceneMeshCandidates[i];
+                if (candidate == null) continue;
+                MeshFilter filter = candidate.GetComponent<MeshFilter>();
+                if (filter != null && filter.sharedMesh == mesh)
+                    return true;
+            }
+            return false;
+        }
 
-            FAlignMeshSceneGizmoDrawer.SetPositionAndRotation(compareT.position, finalRotation);
-            FAlignMeshSceneGizmoDrawer.SetLossyScale(compareT.lossyScale);
+        private static bool ApplyAutoAlignToHighlightDrawer()
+        {
+            if (!FAlignMeshSceneGizmoDrawer.DrawingEnabled || _compareMeshObject == null)
+            {
+                SetAutoAlignStatus("Auto Align failed: no active compare object.", true);
+                return false;
+            }
+
+            Mesh meshGizmo = FAlignMeshSceneGizmoDrawer.SharedMesh;
+            MeshFilter mfB = _compareMeshObject.GetComponent<MeshFilter>();
+            Mesh meshB = mfB != null ? mfB.sharedMesh : null;
+            if (meshGizmo == null || meshB == null)
+            {
+                SetAutoAlignStatus("Auto Align failed: missing source or target mesh.", true);
+                return false;
+            }
+
+            Transform tB = _compareMeshObject.transform;
+            MeshAutoAlignUtils.AutoAlignOptions options = MeshAutoAlignUtils.AutoAlignOptions.Default;
+            bool success = MeshAutoAlignUtils.TryAutoAlign(
+                meshGizmo,
+                meshB,
+                tB,
+                tB.lossyScale,
+                options,
+                out MeshAutoAlignUtils.AutoAlignResult result);
+
+            if (!success)
+            {
+                SetAutoAlignStatus($"Auto Align rejected: {result.FailureReason}", true);
+                Debug.LogWarning($"[AlignMesh Auto] {result.FailureReason}");
+                return false;
+            }
+
+            FAlignMeshSceneGizmoDrawer.SetPositionAndRotation(result.Position, result.Rotation);
+            FAlignMeshSceneGizmoDrawer.SetLossyScale(result.LossyScale);
+            SyncGizmoObjectFromDrawer();
+            SetAutoAlignStatus(
+                $"Auto Align OK ({result.BestStage}). Score {result.Score:0.#####}, coverage {result.Coverage:P0}, candidates {result.RefinedCandidateCount}/{result.CandidateCount}.",
+                false);
+            return true;
+        }
+
+        private static void RunAutoAlignApplyAll()
+        {
+            if (!FAlignMeshSceneGizmoDrawer.DrawingEnabled || SceneMeshCandidates.Count == 0)
+            {
+                SetAutoAlignStatus("Auto (all): no candidates to process.", true);
+                return;
+            }
+
+            var snapshot = new List<GameObject>(SceneMeshCandidates);
+            int applied = 0;
+            int skipped = 0;
+
+            for (int i = 0; i < snapshot.Count; i++)
+            {
+                GameObject go = snapshot[i];
+                if (go == null || !SceneMeshCandidates.Contains(go)) continue;
+
+                _compareMeshObject = go;
+                _currentIndex = SceneMeshCandidates.IndexOf(go);
+                SyncGizmoPoseFromCompareObject(go);
+
+                if (ApplyAutoAlignToHighlightDrawer())
+                {
+                    // Applies mesh + transform, removes the GO from the live list, and advances.
+                    ApplyMeshToCompareObject();
+                    applied++;
+                }
+                else
+                {
+                    // Leave it in the list for manual handling.
+                    skipped++;
+                }
+            }
+
+            SetAutoAlignStatus(
+                $"Auto done. Applied {applied}, skipped {skipped}. Remaining {SceneMeshCandidates.Count}.",
+                skipped > 0);
+            SceneView.RepaintAll();
         }
 
         // ICP (not Trimmed): same logic as MeshKabschAlignMathNetTool.AlignOnce ? nearest-point then Kabsch, apply delta each iter
@@ -321,6 +480,8 @@ namespace Feeder
             }
 
             FAlignMeshSceneGizmoDrawer.SetLossyScale(tB.lossyScale);
+            SyncGizmoObjectFromDrawer();
+            SetAutoAlignStatus("ICP refinement applied to gizmo.", false);
         }
 
         private static bool IsIcpConverged(Matrix4x4 Rt, float convergencePos, float convergenceDeg)
@@ -336,6 +497,7 @@ namespace Feeder
             _currentIndex = (_currentIndex - 1 + SceneMeshCandidates.Count) % SceneMeshCandidates.Count;
             _compareMeshObject = SceneMeshCandidates[_currentIndex];
             SyncGizmoPoseFromCompareObject(_compareMeshObject);
+            OnCandidateChanged();
             FocusSceneViewOn(_compareMeshObject);
         }
 
@@ -345,7 +507,88 @@ namespace Feeder
             _currentIndex = (_currentIndex + 1) % SceneMeshCandidates.Count;
             _compareMeshObject = SceneMeshCandidates[_currentIndex];
             SyncGizmoPoseFromCompareObject(_compareMeshObject);
+            OnCandidateChanged();
             FocusSceneViewOn(_compareMeshObject);
+        }
+
+        private static void SelectCandidateObject(GameObject selected)
+        {
+            _compareMeshObject = selected;
+            _currentIndex = SceneMeshCandidates.IndexOf(selected);
+            SyncGizmoPoseFromCompareObject(_compareMeshObject);
+            OnCandidateChanged();
+            FocusSceneViewOn(_compareMeshObject);
+        }
+
+        // Candidate switching does a fast snap (gizmo pose copied from the object) only —
+        // no expensive Auto Align, so browsing objects stays responsive.
+        private static void OnCandidateChanged()
+        {
+            SetAutoAlignStatus("Candidate changed (quick aligned). Use Auto Align to refine, then Apply Mesh.", false);
+        }
+
+        private static void ToggleGizmoObject()
+        {
+            if (_gizmoObject != null)
+            {
+                DestroyGizmoObject();
+                return;
+            }
+
+            Mesh mesh = FAlignMeshSceneGizmoDrawer.SharedMesh;
+            if (mesh == null)
+            {
+                SetAutoAlignStatus("Cannot show gizmo object: missing source mesh.", true);
+                return;
+            }
+
+            _gizmoObject = new GameObject(GizmoObjectName);
+            _gizmoObject.hideFlags = HideFlags.DontSave;
+            MeshFilter filter = _gizmoObject.AddComponent<MeshFilter>();
+            filter.sharedMesh = mesh;
+            _gizmoObject.AddComponent<MeshRenderer>().enabled = false;
+            SyncGizmoObjectFromDrawer();
+            Selection.activeGameObject = _gizmoObject;
+            SetAutoAlignStatus("Gizmo object shown. Move/rotate/scale it to adjust the wire gizmo.", false);
+        }
+
+        private static void SyncGizmoObjectFromDrawer()
+        {
+            if (_gizmoObject == null) return;
+            _syncingGizmoObject = true;
+            Transform t = _gizmoObject.transform;
+            t.SetPositionAndRotation(FAlignMeshSceneGizmoDrawer.Position, FAlignMeshSceneGizmoDrawer.Rotation);
+            t.localScale = FAlignMeshSceneGizmoDrawer.LossyScale;
+            MeshFilter filter = _gizmoObject.GetComponent<MeshFilter>();
+            if (filter != null)
+                filter.sharedMesh = FAlignMeshSceneGizmoDrawer.SharedMesh;
+            _syncingGizmoObject = false;
+        }
+
+        private static void SyncDrawerFromGizmoObjectIfNeeded()
+        {
+            if (_gizmoObject == null || _syncingGizmoObject) return;
+            Transform t = _gizmoObject.transform;
+            if (t.hasChanged)
+            {
+                FAlignMeshSceneGizmoDrawer.SetPositionAndRotation(t.position, t.rotation);
+                FAlignMeshSceneGizmoDrawer.SetLossyScale(t.lossyScale);
+                t.hasChanged = false;
+            }
+        }
+
+        private static void DestroyGizmoObject()
+        {
+            if (_gizmoObject == null) return;
+            Object.DestroyImmediate(_gizmoObject);
+            _gizmoObject = null;
+        }
+
+        private static void SetAutoAlignStatus(string message, bool isError)
+        {
+            _autoAlignStatus = message;
+            _autoAlignStatusIsError = isError;
+            SceneView.RepaintAll();
         }
     }
 }

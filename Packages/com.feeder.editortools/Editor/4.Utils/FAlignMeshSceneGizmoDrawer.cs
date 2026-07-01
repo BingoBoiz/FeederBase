@@ -35,6 +35,8 @@ namespace Feeder
 
         public static void SetSharedMesh(Mesh mesh)
         {
+            if (_sharedMesh != mesh)
+                _edgeMeshCacheId = 0;
             _sharedMesh = mesh;
             SceneView.RepaintAll();
         }

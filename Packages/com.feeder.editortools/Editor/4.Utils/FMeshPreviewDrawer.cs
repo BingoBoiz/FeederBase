@@ -18,8 +18,9 @@ namespace Feeder
         private static readonly Dictionary<string, PreviewRenderUtility> s_PreviewUtilityBySlot = new Dictionary<string, PreviewRenderUtility>();
         private static Material s_SolidMat;
         private static Material s_WireMat;
-        private static Mesh s_EdgeMeshCache;
-        private static int s_EdgeMeshCacheId;
+        // One edge (wireframe) mesh cached per slot so the left/right previews (different meshes)
+        // don't thrash a single shared cache and rebuild each other's edges every repaint.
+        private static readonly Dictionary<string, EdgeMeshEntry> s_EdgeMeshBySlot = new Dictionary<string, EdgeMeshEntry>();
         private static readonly Dictionary<string, Vector2> s_OrbitBySlot = new Dictionary<string, Vector2>();
         private static readonly Dictionary<string, float> s_ZoomBySlot = new Dictionary<string, float>();
         private static readonly Dictionary<string, Vector3> s_RotationEulerBySlot = new Dictionary<string, Vector3>();
@@ -116,7 +117,7 @@ namespace Feeder
             }
 
             // wireframe pass: edge lines on top
-            var edgeMesh = GetOrBuildEdgeMesh(mesh);
+            var edgeMesh = GetOrBuildEdgeMesh(mesh, key);
             var wireMat = GetWireframeMaterial();
             if (edgeMesh != null && wireMat != null)
                 utility.DrawMesh(edgeMesh, pos, rot, wireMat, 0);
@@ -261,12 +262,14 @@ namespace Feeder
             return s_RedMat;
         }
 
-        /// <summary>Builds a line mesh from triangle edges for wireframe draw.</summary>
-        private static Mesh GetOrBuildEdgeMesh(Mesh mesh)
+        /// <summary>Builds a line mesh from triangle edges for wireframe draw, cached per slot.</summary>
+        private static Mesh GetOrBuildEdgeMesh(Mesh mesh, string slotId)
         {
             if (mesh == null) return null;
+            var key = string.IsNullOrEmpty(slotId) ? "Default" : slotId;
             var id = mesh.GetInstanceID();
-            if (s_EdgeMeshCache != null && s_EdgeMeshCacheId == id) return s_EdgeMeshCache;
+            if (s_EdgeMeshBySlot.TryGetValue(key, out var entry) && entry.Edge != null && entry.MeshId == id)
+                return entry.Edge;
 
             var lineList = new List<int>();
             for (var s = 0; s < mesh.subMeshCount; s++)
@@ -291,11 +294,16 @@ namespace Feeder
             edgeMesh.RecalculateBounds();
             edgeMesh.hideFlags = HideFlags.HideAndDontSave;
 
-            if (s_EdgeMeshCache != null)
-                Object.DestroyImmediate(s_EdgeMeshCache);
-            s_EdgeMeshCache = edgeMesh;
-            s_EdgeMeshCacheId = id;
-            return s_EdgeMeshCache;
+            if (entry != null && entry.Edge != null)
+                Object.DestroyImmediate(entry.Edge);
+            s_EdgeMeshBySlot[key] = new EdgeMeshEntry { MeshId = id, Edge = edgeMesh };
+            return edgeMesh;
+        }
+
+        private sealed class EdgeMeshEntry
+        {
+            public int MeshId;
+            public Mesh Edge;
         }
 
         /// <summary>Call when tool is destroyed or domain reload to free resources.</summary>
@@ -306,12 +314,12 @@ namespace Feeder
                 kv.Value?.Cleanup();
             }
             s_PreviewUtilityBySlot.Clear();
-            if (s_EdgeMeshCache != null)
+            foreach (var kv in s_EdgeMeshBySlot)
             {
-                Object.DestroyImmediate(s_EdgeMeshCache);
-                s_EdgeMeshCache = null;
+                if (kv.Value?.Edge != null)
+                    Object.DestroyImmediate(kv.Value.Edge);
             }
-            s_EdgeMeshCacheId = 0;
+            s_EdgeMeshBySlot.Clear();
             s_OrbitBySlot.Clear();
             s_ZoomBySlot.Clear();
             if (s_SphereMesh != null)
