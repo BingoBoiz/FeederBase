@@ -1,19 +1,32 @@
 #if UNITY_EDITOR
 using System.Collections.Generic;
+using System.IO;
 using Sirenix.OdinInspector.Editor;
 using UnityEditor;
 using UnityEngine;
 
 namespace Feeder
 {
-    /// <summary>Editor window for recoloring any mesh that uses a palette texture.</summary>
+    /// <summary>
+    /// Editor window for recoloring meshes and textures.
+    /// Tab 1 (Mesh Palette): writes new colors into free palette cells and remaps mesh UVs.
+    /// Tab 2 (Texture Recolor): recolors the texture pixels directly while preserving shading.
+    /// </summary>
     public sealed class FTextureModifierWindow : OdinEditorWindow
     {
+        private enum Tab { MeshPalette, TextureRecolor }
+
         private const string ToolName = "Feeder Texture Modifier";
         private const string GeneratedFolder = "Assets/Generated Mesh Palette Colors";
         private const int MenuPriority = 2;
         private const float LeftColumnWidth = 300f;
 
+        private static readonly string[] TabLabels = { "Mesh Palette", "Texture Recolor" };
+        private static readonly string[] RecolorPreviewLabels = { "Original", "Result", "Mask" };
+
+        private Tab tab;
+
+        // ---- Mesh Palette tab state ----
         private readonly MeshPaletteColorizerSession session = new MeshPaletteColorizerSession();
         private readonly MeshPalettePreviewController preview = new MeshPalettePreviewController();
 
@@ -26,6 +39,20 @@ namespace Feeder
         private bool colorEditing;
         private bool applied;
         private static readonly Color HighlightFill = new Color(0f, 1f, 1f, 0.45f);
+
+        // ---- Texture Recolor tab state ----
+        private readonly TextureRecolorSession recolorSession = new TextureRecolorSession();
+        private readonly TextureRecolorPreviewController recolorPreview = new TextureRecolorPreviewController();
+
+        private Renderer recolorRenderer;
+        private int recolorSlotIndex;
+        private int recolorMaxClusters = 8;
+        private RecolorMaskSettings recolorMask = RecolorMaskSettings.Default;
+        private RecolorPreviewMode recolorPreviewMode = RecolorPreviewMode.Result;
+        private bool recolorAdvancedFoldout;
+        private bool recolorScenePreview = true;
+        private bool recolorPreviewDirty;
+        private bool recolorApplied;
 
         private Vector2 windowScroll;
 
@@ -59,14 +86,79 @@ namespace Feeder
 
             preview.Cleanup();
             session.Reset();
+
+            if (!recolorApplied)
+                recolorPreview.RevertScenePreview(recolorSession.TargetRenderer);
+
+            recolorPreview.Cleanup();
+            recolorSession.Reset();
             base.OnDisable();
         }
 
         protected override void OnImGUI()
         {
-            windowScroll = EditorGUILayout.BeginScrollView(windowScroll, GUILayout.ExpandHeight(true));
-
             GUILayout.Space(4f);
+            int newTab = GUILayout.Toolbar((int)tab, TabLabels, EditorStyles.toolbarButton, GUILayout.Height(24f));
+            if (newTab != (int)tab)
+                SwitchTab((Tab)newTab);
+
+            windowScroll = EditorGUILayout.BeginScrollView(windowScroll, GUILayout.ExpandHeight(true));
+            GUILayout.Space(4f);
+
+            if (tab == Tab.MeshPalette)
+                DrawMeshPaletteTab();
+            else
+                DrawTextureRecolorTab();
+
+            EditorGUILayout.EndScrollView();
+
+            if (tab == Tab.MeshPalette && Palette != null)
+            {
+                EditorGUILayout.Space();
+                DrawActionButtons();
+            }
+            else if (tab == Tab.TextureRecolor && recolorSession.IsLoaded)
+            {
+                EditorGUILayout.Space();
+                DrawRecolorActionButtons();
+            }
+        }
+
+        private void SwitchTab(Tab next)
+        {
+            if (tab == Tab.MeshPalette)
+            {
+                // hide the mesh preview while the other tab is active; the session survives
+                RevertPreview();
+                hoverColorIndex = -1;
+                colorEditing = false;
+            }
+            else
+            {
+                recolorPreview.RevertScenePreview(recolorSession.TargetRenderer);
+            }
+
+            tab = next;
+            GUI.FocusControl(null);
+
+            if (tab == Tab.MeshPalette)
+            {
+                if (session.IsLoaded && AnyChanged())
+                    BuildPreview();
+            }
+            else
+            {
+                recolorPreviewDirty = true;
+            }
+
+            SceneView.RepaintAll();
+            Repaint();
+        }
+
+        // ================================================================ Mesh Palette tab
+
+        private void DrawMeshPaletteTab()
+        {
             StylesUtils.DrawDescription(
                 "Recolor meshes that use a palette texture: select a Renderer, load and analyze its palette usage, edit colors, then apply.");
             GUILayout.Space(6f);
@@ -91,14 +183,6 @@ namespace Feeder
             {
                 EditorGUILayout.Space();
                 StylesUtils.DrawInfoBox("Select a renderer that uses a palette texture, then click \"Load & Analyze\".");
-            }
-
-            EditorGUILayout.EndScrollView();
-
-            if (Palette != null)
-            {
-                EditorGUILayout.Space();
-                DrawActionButtons();
             }
         }
 
@@ -258,6 +342,9 @@ namespace Feeder
 
         private void OnSceneGUIDraw(SceneView sv)
         {
+            if (tab != Tab.MeshPalette)
+                return;
+
             MeshPaletteSceneOverlay.Draw(
                 session.TargetRenderer,
                 session.Analysis,
@@ -433,6 +520,362 @@ namespace Feeder
             {
                 preview.Revert(session.TargetRenderer);
                 Debug.LogError($"[{ToolName}] Apply failed: {ex}");
+                EditorUtility.DisplayDialog(ToolName, "Apply failed:\n" + ex.Message, "OK");
+            }
+        }
+
+        // ================================================================ Texture Recolor tab
+
+        private void DrawTextureRecolorTab()
+        {
+            StylesUtils.DrawDescription(
+                "Recolor a texture directly: detect its dominant colors, pick replacements, and rewrite the pixels " +
+                "while preserving shading. The mesh and its UVs are not modified.");
+            GUILayout.Space(6f);
+
+            DrawRecolorTargetSection();
+
+            if (recolorSession.IsLoaded)
+            {
+                EditorGUILayout.Space();
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    using (new EditorGUILayout.VerticalScope(GUILayout.Width(LeftColumnWidth)))
+                        DrawRecolorClustersSection();
+
+                    GUILayout.Space(12f);
+
+                    using (new EditorGUILayout.VerticalScope(GUILayout.ExpandWidth(true)))
+                        DrawRecolorPreviewSection();
+                }
+            }
+            else
+            {
+                EditorGUILayout.Space();
+                StylesUtils.DrawInfoBox("Select a renderer whose material uses a texture, then click \"Load & Analyze\".");
+            }
+        }
+
+        private void DrawRecolorTargetSection()
+        {
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                EditorGUILayout.LabelField("Target", EditorStyles.boldLabel);
+
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    EditorGUI.BeginChangeCheck();
+                    recolorRenderer = (Renderer)EditorGUILayout.ObjectField(
+                        "Target Renderer", recolorRenderer, typeof(Renderer), true);
+                    if (EditorGUI.EndChangeCheck())
+                        ResetRecolorState();
+
+                    if (GUILayout.Button("Use Selection", GUILayout.Width(130)))
+                    {
+                        var go = Selection.activeGameObject;
+                        var r = go != null ? go.GetComponent<Renderer>() : null;
+                        if (r == null)
+                        {
+                            EditorUtility.DisplayDialog(ToolName, "The selected GameObject does not have a Renderer.", "OK");
+                        }
+                        else
+                        {
+                            recolorRenderer = r;
+                            ResetRecolorState();
+                        }
+                    }
+                }
+
+                if (recolorRenderer == null)
+                    return;
+
+                var mats = recolorRenderer.sharedMaterials;
+                if (mats != null && mats.Length > 1)
+                {
+                    var names = new string[mats.Length];
+                    for (int i = 0; i < mats.Length; i++)
+                        names[i] = $"{i}: {(mats[i] != null ? mats[i].name : "<null>")}";
+
+                    recolorSlotIndex = Mathf.Clamp(recolorSlotIndex, 0, mats.Length - 1);
+                    recolorSlotIndex = EditorGUILayout.Popup("Material Slot", recolorSlotIndex, names);
+                }
+
+                recolorMaxClusters = EditorGUILayout.IntSlider(
+                    new GUIContent("Max Colors", "Maximum number of dominant color groups to detect."),
+                    recolorMaxClusters, 4, 12);
+
+                Color originalBg = GUI.backgroundColor;
+                GUI.backgroundColor = new Color(0.4f, 0.8f, 1f);
+                if (GUILayout.Button("Load & Analyze", GUILayout.Height(26)))
+                    LoadAndAnalyzeRecolor();
+                GUI.backgroundColor = originalBg;
+
+                if (recolorSession.IsLoaded)
+                {
+                    EditorGUILayout.LabelField(
+                        $"Texture: {Path.GetFileName(recolorSession.SourceTexturePath)}  ({recolorSession.FullWidth}x{recolorSession.FullHeight})",
+                        EditorStyles.miniLabel);
+
+                    if (recolorSession.SourceIsLinear)
+                        EditorGUILayout.HelpBox(
+                            "This texture is imported as linear data (sRGB off), e.g. a mask or normal map. " +
+                            "The recolor math assumes color data, so the result may be incorrect.",
+                            MessageType.Warning);
+                }
+            }
+        }
+
+        private void DrawRecolorClustersSection()
+        {
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                var clusters = recolorSession.Clusters;
+                EditorGUILayout.LabelField($"Texture uses {clusters.Count} dominant colors", EditorStyles.boldLabel);
+
+                if (clusters.Count == 0)
+                {
+                    EditorGUILayout.HelpBox(
+                        "No dominant colors were detected. The texture may be fully transparent.",
+                        MessageType.Warning);
+                    return;
+                }
+
+                EditorGUILayout.LabelField(
+                    "Pick a new color for any group. Pixels similar to the original color are recolored with their shading preserved; other pixels stay untouched.",
+                    EditorStyles.wordWrappedMiniLabel);
+
+                for (int i = 0; i < clusters.Count; i++)
+                {
+                    var cluster = clusters[i];
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        using (new EditorGUILayout.VerticalScope())
+                        {
+                            using (new EditorGUILayout.HorizontalScope())
+                            {
+                                Rect sw = GUILayoutUtility.GetRect(22, 18, GUILayout.Width(22));
+                                EditorGUI.DrawRect(sw, (Color)cluster.color);
+
+                                EditorGUI.BeginChangeCheck();
+                                cluster.newColor = EditorGUILayout.ColorField(cluster.newColor, GUILayout.ExpandWidth(true));
+                                if (EditorGUI.EndChangeCheck())
+                                    recolorPreviewDirty = true;
+                            }
+
+                            using (new EditorGUILayout.HorizontalScope())
+                            {
+                                EditorGUILayout.LabelField($"{cluster.coverage:P1} of pixels", EditorStyles.miniLabel, GUILayout.ExpandWidth(true));
+
+                                using (new EditorGUI.DisabledScope(!cluster.Changed))
+                                {
+                                    if (GUILayout.Button("Reset", GUILayout.Width(50)))
+                                    {
+                                        cluster.newColor = (Color)cluster.color;
+                                        recolorPreviewDirty = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                using (new EditorGUI.DisabledScope(!recolorSession.AnyChanged))
+                {
+                    if (GUILayout.Button("Reset All", GUILayout.Height(20)))
+                    {
+                        recolorSession.ResetClusterEdits();
+                        recolorPreviewDirty = true;
+                    }
+                }
+
+                GUILayout.Space(4f);
+                recolorAdvancedFoldout = EditorGUILayout.Foldout(recolorAdvancedFoldout, "Advanced Mask Settings", true);
+                if (recolorAdvancedFoldout)
+                {
+                    EditorGUI.indentLevel++;
+                    EditorGUI.BeginChangeCheck();
+                    recolorMask.hueToleranceDeg = EditorGUILayout.Slider(
+                        new GUIContent("Hue Tolerance (deg)", "How far a pixel's hue may drift from the group color and still be recolored."),
+                        recolorMask.hueToleranceDeg, 1f, 180f);
+                    recolorMask.satTolerance = EditorGUILayout.Slider(
+                        new GUIContent("Saturation Tolerance"), recolorMask.satTolerance, 0.01f, 1f);
+                    recolorMask.valTolerance = EditorGUILayout.Slider(
+                        new GUIContent("Value Tolerance"), recolorMask.valTolerance, 0.01f, 1f);
+                    recolorMask.softness = EditorGUILayout.Slider(
+                        new GUIContent("Edge Softness", "Soft falloff at the mask border to avoid hard seams."),
+                        recolorMask.softness, 0.01f, 1f);
+                    recolorMask.shadingClamp = EditorGUILayout.Slider(
+                        new GUIContent("Shading Clamp", "Limits how much brighter than the group color a recolored pixel can get."),
+                        recolorMask.shadingClamp, 1f, 4f);
+                    if (EditorGUI.EndChangeCheck())
+                        recolorPreviewDirty = true;
+
+                    if (GUILayout.Button("Reset Mask Settings", GUILayout.Height(20)))
+                    {
+                        recolorMask = RecolorMaskSettings.Default;
+                        recolorPreviewDirty = true;
+                    }
+                    EditorGUI.indentLevel--;
+                }
+            }
+        }
+
+        private void DrawRecolorPreviewSection()
+        {
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                bool anyChange = recolorSession.AnyChanged;
+
+                EditorGUILayout.LabelField(
+                    anyChange ? "Texture (Live Preview)" : "Texture",
+                    EditorStyles.boldLabel);
+
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    EditorGUI.BeginChangeCheck();
+                    recolorPreviewMode = (RecolorPreviewMode)GUILayout.Toolbar(
+                        (int)recolorPreviewMode, RecolorPreviewLabels, GUILayout.Height(20f));
+                    if (EditorGUI.EndChangeCheck())
+                        recolorPreviewDirty = true;
+
+                    GUILayout.Space(8f);
+
+                    EditorGUI.BeginChangeCheck();
+                    recolorScenePreview = GUILayout.Toggle(recolorScenePreview,
+                        new GUIContent("Preview on Renderer", "Temporarily shows the recolored texture on the target renderer in the Scene view."),
+                        GUILayout.Width(150f));
+                    if (EditorGUI.EndChangeCheck())
+                    {
+                        if (!recolorScenePreview)
+                            recolorPreview.RevertScenePreview(recolorSession.TargetRenderer);
+                        recolorPreviewDirty = true;
+                    }
+                }
+
+                if (recolorPreviewMode == RecolorPreviewMode.Mask)
+                    StylesUtils.DrawInfoBox("White = pixels that will be recolored, black = pixels kept as-is.");
+
+                UpdateRecolorPreviewIfDirty();
+
+                PaletteGUI.DrawTextureFitWidth(
+                    RecolorPreviewLabels[(int)recolorPreviewMode],
+                    recolorPreview.PreviewTexture, null, -1,
+                    recolorSession.PreviewWidth, recolorSession.PreviewHeight);
+
+                EditorGUILayout.LabelField(
+                    "The window preview is downscaled; Apply always processes the full resolution texture.",
+                    EditorStyles.wordWrappedMiniLabel);
+            }
+        }
+
+        private void UpdateRecolorPreviewIfDirty()
+        {
+            bool needsInitial = recolorPreview.PreviewTexture == null;
+            if ((!recolorPreviewDirty && !needsInitial) || Event.current.type != EventType.Repaint)
+                return;
+
+            recolorPreview.UpdatePreview(recolorSession, recolorMask, recolorPreviewMode);
+
+            if (recolorSession.AnyChanged && recolorScenePreview)
+                recolorPreview.ApplyScenePreview(recolorSession);
+            else if (recolorPreview.IsScenePreviewActive)
+                recolorPreview.RevertScenePreview(recolorSession.TargetRenderer);
+
+            recolorPreviewDirty = false;
+            SceneView.RepaintAll();
+        }
+
+        private void DrawRecolorActionButtons()
+        {
+            bool anyChange = recolorSession.AnyChanged;
+
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                StylesUtils.DrawInfoBox(
+                    "Apply rewrites the source texture file in place at full resolution. Every mesh and material that shares " +
+                    "this texture is affected, and the file change cannot be undone. Non-PNG sources (.tga/.jpg/...) are exported " +
+                    "as a new \"_recolored.png\" next to the original and assigned to the material instead.");
+
+                using (new EditorGUI.DisabledScope(!anyChange))
+                {
+                    Color originalBg = GUI.backgroundColor;
+                    GUI.backgroundColor = new Color(0.4f, 0.6f, 0.9f);
+                    if (GUILayout.Button("Apply (overwrite texture in place)", GUILayout.Height(34)))
+                        ApplyRecolor();
+                    GUI.backgroundColor = originalBg;
+                }
+            }
+        }
+
+        private void ResetRecolorState()
+        {
+            if (!recolorApplied)
+                recolorPreview.RevertScenePreview(recolorSession.TargetRenderer);
+
+            recolorPreview.Cleanup();
+            recolorSession.Reset();
+            recolorApplied = false;
+            recolorPreviewDirty = true;
+        }
+
+        private void LoadAndAnalyzeRecolor()
+        {
+            recolorPreview.RevertScenePreview(recolorSession.TargetRenderer);
+            recolorPreview.Cleanup();
+
+            if (!recolorSession.Load(recolorRenderer, recolorSlotIndex, recolorMaxClusters, out string error))
+            {
+                EditorUtility.DisplayDialog(ToolName, error, "OK");
+                return;
+            }
+
+            recolorSlotIndex = recolorSession.MaterialSlotIndex;
+            recolorApplied = false;
+            recolorPreviewDirty = true;
+            Repaint();
+        }
+
+        private void ApplyRecolor()
+        {
+            if (!recolorSession.IsLoaded || !recolorSession.AnyChanged)
+                return;
+
+            string fileName = Path.GetFileName(recolorSession.SourceTexturePath);
+            bool isPng = string.Equals(Path.GetExtension(recolorSession.SourceTexturePath), ".png",
+                System.StringComparison.OrdinalIgnoreCase);
+
+            string message = isPng
+                ? $"Overwrite \"{fileName}\" in place?\n\nEvery mesh/material that shares this texture is affected. This cannot be undone."
+                : $"\"{fileName}\" is not a PNG. A new \"{Path.GetFileNameWithoutExtension(fileName)}_recolored.png\" will be exported next to it and assigned to the material.\n\nContinue?";
+
+            if (!EditorUtility.DisplayDialog(ToolName, message, isPng ? "Overwrite" : "Export", "Cancel"))
+                return;
+
+            try
+            {
+                recolorPreview.RevertScenePreview(recolorSession.TargetRenderer);
+
+                TextureRecolorApplyResult result = TextureRecolorApplyService.Apply(recolorSession, recolorMask);
+
+                recolorApplied = true;
+                recolorPreviewDirty = true;
+
+                string action = result.ConvertedToPng ? "exported (source was not PNG)" : "overwritten in place";
+                Debug.Log($"<color=green>[{ToolName}]</color> Texture recolored:\n - {action}: {result.WrittenPath}\nRenderer: {recolorSession.TargetRenderer.name}.");
+
+                if (result.PingTarget != null)
+                    EditorGUIUtility.PingObject(result.PingTarget);
+
+                ShowNotification(new GUIContent(result.ConvertedToPng ? "Exported PNG" : "Texture overwritten"));
+
+                // reload so the cached pixels/clusters match the rewritten texture,
+                // otherwise a second Apply would recolor on top of the first one
+                recolorSession.Load(recolorRenderer, recolorSlotIndex, recolorMaxClusters, out _);
+            }
+            catch (System.Exception ex)
+            {
+                recolorPreview.RevertScenePreview(recolorSession.TargetRenderer);
+                Debug.LogError($"[{ToolName}] Recolor apply failed: {ex}");
                 EditorUtility.DisplayDialog(ToolName, "Apply failed:\n" + ex.Message, "OK");
             }
         }
