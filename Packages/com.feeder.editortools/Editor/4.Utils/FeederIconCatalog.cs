@@ -46,6 +46,7 @@ namespace Feeder
             return new GUIContent(title, icon.Active);
         }
 
+        public static EditorIcon FeederHubTitleIcon => EditorIcons.GridBlocks;
         public static EditorIcon WindowMenuTitleIcon => EditorIcons.List;
         public static EditorIcon SceneLoaderTitleIcon => EditorIcons.Folder;
         public static EditorIcon ScriptTemplateTitleIcon => EditorIcons.File;
