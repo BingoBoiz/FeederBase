@@ -71,7 +71,7 @@ namespace Feeder
         public void AddComponent()
         {
             Type selectedType = ComponentType;
-            int addedCount = ComponentBatchOperations.AddComponentToTargets(selectedType, SelectedHierarchyPath, TargetPrefabs);
+            int addedCount = FComponentBatchOperations.AddComponentToTargets(selectedType, SelectedHierarchyPath, TargetPrefabs);
             Debug.Log($"<color=green>Added {addedCount} component(s) of type {selectedType.Name}</color>");
             RebuildComponentInstanceCache();
         }
@@ -207,7 +207,7 @@ namespace Feeder
         [Button(ButtonSizes.Large)]
         public void ApplyModify()
         {
-            int modifiedCount = ComponentBatchOperations.ApplyModifyToCachedComponentHits(
+            int modifiedCount = FComponentBatchOperations.ApplyModifyToCachedComponentHits(
                 ComponentType,
                 previewHandle.PreviewComponent,
                 modifiedPropertyPaths,
@@ -235,7 +235,7 @@ namespace Feeder
         [Button(ButtonSizes.Large)]
         public void RemoveComponent()
         {
-            int removedCount = ComponentBatchOperations.RemoveComponentFromCachedComponentHits(ComponentType, cachedComponentHits);
+            int removedCount = FComponentBatchOperations.RemoveComponentFromCachedComponentHits(ComponentType, cachedComponentHits);
             Debug.Log($"<color=green>Removed {removedCount} components of type {ComponentType.Name}</color>");
             RebuildComponentInstanceCache();
         }
@@ -337,7 +337,7 @@ namespace Feeder
 
         private IEnumerable<ValueDropdownItem<Type>> GetComponentTypeOptions()
         {
-            return ComponentTypeOptionsProvider.GetComponentTypeOptions();
+            return FComponentTypeOptionsProvider.GetComponentTypeOptions();
         }
 
         private List<ValueDropdownItem<string>> hierarchyOptions = new List<ValueDropdownItem<string>>();
@@ -372,7 +372,7 @@ namespace Feeder
                 return;
             }
 
-            HierarchyOptionsResult result = HierarchyOptionsBuilder.Build(TargetPrefabs);
+            HierarchyOptionsResult result = FHierarchyOptionsBuilder.Build(TargetPrefabs);
             hierarchyOptions = result.Options;
             conflictPaths = result.ConflictPaths;
             cachedPrefabCount = result.PrefabCount;
@@ -386,7 +386,7 @@ namespace Feeder
             if (!(TargetPrefabs?.Count > 0))
                 return;
 
-            ComponentBatchOperations.CollectComponentFindHits(ComponentType, TargetPrefabs, cachedComponentHits);
+            FComponentBatchOperations.CollectComponentFindHits(ComponentType, TargetPrefabs, cachedComponentHits);
         }
 
         private void DrawFindTargetObjectField(ComponentFindHit hit)
@@ -440,7 +440,7 @@ namespace Feeder
             Transform root = stage.prefabContentsRoot.transform;
             Transform targetTransform = string.IsNullOrEmpty(relativeHierarchyPath)
                 ? root
-                : HierarchyPathResolver.ResolveTargetByPath(root, relativeHierarchyPath);
+                : FHierarchyPathResolver.ResolveTargetByPath(root, relativeHierarchyPath);
 
             GameObject targetGameObject = targetTransform.gameObject;
             Selection.activeGameObject = targetGameObject;

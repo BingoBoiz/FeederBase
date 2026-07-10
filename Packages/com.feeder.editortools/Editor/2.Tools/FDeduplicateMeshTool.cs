@@ -162,7 +162,7 @@ namespace Feeder
 
             // Reference-mesh hint shown once as a guide (green box) instead of inside every group.
             GUILayout.Space(4f);
-            StylesUtils.DrawInfoBox(
+            FStylesUtils.DrawInfoBox(
                 "Element 0 = reference mesh. Analyze thay các mesh còn lại trong group bằng element 0. Kéo để sắp xếp lại thứ tự.");
 
             if (_mergeSource != null)
@@ -215,7 +215,7 @@ namespace Feeder
                     }
 
                     if (CouldBeSimilar(reference, candidate) &&
-                        DeduplicateMeshUtils.AreMeshesVertexSimilar(reference, candidate, _similarityTolerance))
+                        FDeduplicateMeshUtils.AreMeshesVertexSimilar(reference, candidate, _similarityTolerance))
                     {
                         consumed[j] = true;
                         groupMeshes.Add(candidate);
@@ -312,8 +312,8 @@ namespace Feeder
 
             float rotationRowHeight = EditorGUIUtility.singleLineHeight;
             Rect rotationRowRect = GUILayoutUtility.GetRect(availableWidth, rotationRowHeight);
-            PreviewUtils.DrawMeshRotationFields(new Rect(rotationRowRect.x + blocksStartX, rotationRowRect.y, halfW, rotationRowHeight), LeftPreviewSlotId, "Rotation");
-            PreviewUtils.DrawMeshRotationFields(new Rect(rotationRowRect.x + blocksStartX + halfW + NavGap, rotationRowRect.y, halfW, rotationRowHeight), RightPreviewSlotId, "Rotation");
+            FPreviewUtils.DrawMeshRotationFields(new Rect(rotationRowRect.x + blocksStartX, rotationRowRect.y, halfW, rotationRowHeight), LeftPreviewSlotId, "Rotation");
+            FPreviewUtils.DrawMeshRotationFields(new Rect(rotationRowRect.x + blocksStartX + halfW + NavGap, rotationRowRect.y, halfW, rotationRowHeight), RightPreviewSlotId, "Rotation");
 
             GUILayout.Space(8f);
 
@@ -574,14 +574,14 @@ namespace Feeder
             var scene = EditorSceneManager.GetActiveScene();
             if (!scene.IsValid()) return false;
 
-            var gos = SceneMeshHighlightUtils.FindGameObjectsWithAnyMesh(scene, otherMeshes);
+            var gos = FSceneMeshHighlightUtils.FindGameObjectsWithAnyMesh(scene, otherMeshes);
             if (gos.Count == 0)
             {
                 if (showDialogs) EditorUtility.DisplayDialog("Analyze Group", "No GameObjects in the current scene use the other meshes in this group (element 0 excluded).", "OK");
                 return false;
             }
 
-            SceneMeshHighlightUtils.IsolateGameObjects(scene, gos);
+            FSceneMeshHighlightUtils.IsolateGameObjects(scene, gos);
             // Quick align only on open/switch (no slow Auto Align); expose Next Group navigation to the overlay.
             FAlignMeshSceneOverlay.OpenWithSceneCandidates(gos, sourceMesh, AnalyzeNextGroup);
             EditorWindow.focusedWindow?.Repaint();
@@ -596,14 +596,14 @@ namespace Feeder
             var scene = EditorSceneManager.GetActiveScene();
             if (!scene.IsValid()) return;
 
-            var gos = SceneMeshHighlightUtils.FindGameObjectsWithMesh(scene, meshRight);
+            var gos = FSceneMeshHighlightUtils.FindGameObjectsWithMesh(scene, meshRight);
             if (gos.Count == 0)
             {
                 EditorUtility.DisplayDialog("Analyze Scene", "No GameObjects in the current scene use this mesh.", "OK");
                 return;
             }
 
-            SceneMeshHighlightUtils.IsolateGameObjects(scene, gos);
+            FSceneMeshHighlightUtils.IsolateGameObjects(scene, gos);
             Mesh meshLeft = list[leftIdx];
             FAlignMeshSceneOverlay.OpenWithSceneCandidates(gos, meshLeft, onNextGroup: null, autoAlignOnce: autoAlign);
             EditorWindow.focusedWindow?.Repaint();

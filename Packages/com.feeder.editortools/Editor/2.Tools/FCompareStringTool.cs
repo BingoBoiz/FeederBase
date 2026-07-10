@@ -26,9 +26,9 @@ namespace Feeder
 
         protected override string GetDescription()
         {
-            return "Fuzzy-match TargetAssets to enum values by name. Handles case, special chars, token reorder, and typos. " +
-                   "Example: enum 'Jewelry_Flower_Choker' matches asset 'flowe_choker_jewelry' at ~95% similarity. " +
-                   "Score shown even when below threshold so you can tune it. Asset is editable for manual override.";
+            return "Khớp mờ TargetAssets với các giá trị enum theo tên. Bỏ qua hoa/thường, ký tự đặc biệt, đảo thứ tự token và lỗi gõ. " +
+                   "Ví dụ: enum 'Jewelry_Flower_Choker' khớp asset 'flowe_choker_jewelry' ở mức ~95%. " +
+                   "Điểm số vẫn hiện khi dưới ngưỡng để bạn tinh chỉnh. Cột Asset sửa được để chỉnh tay.";
         }
 
         [PropertySpace(SpaceBefore = 8)]
@@ -57,7 +57,7 @@ namespace Feeder
         [Button("Analyze", ButtonSizes.Large)]
         private void Analyze()
         {
-            var enumType = EnumTypeUtils.ResolveEnumType(_selectedEnumTypeName);
+            var enumType = FEnumTypeUtils.ResolveEnumType(_selectedEnumTypeName);
             if (enumType == null)
                 throw new InvalidOperationException("Select an enum type first.");
             if (TargetAssets == null)
@@ -77,7 +77,7 @@ namespace Feeder
             {
                 object enumVal = enumValues.GetValue(i);
                 string enumName = enumVal?.ToString() ?? "";
-                if (EnumTypeUtils.ShouldSkipEnumMember(enumName))
+                if (FEnumTypeUtils.ShouldSkipEnumMember(enumName))
                     continue;
 
                 string normalizedEnum = FuzzyMatchUtils.Normalize(enumName);
@@ -113,6 +113,6 @@ namespace Feeder
         }
 
         private IEnumerable<ValueDropdownItem<string>> GetEnumTypeDropdown()
-            => EnumTypeUtils.GetEnumTypeDropdown();
+            => FEnumTypeUtils.GetEnumTypeDropdown();
     }
 }

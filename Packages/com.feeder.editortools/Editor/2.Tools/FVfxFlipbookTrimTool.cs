@@ -59,7 +59,7 @@ namespace Feeder
         private void DrawGuide()
         {
             GUILayout.Space(2);
-            StylesUtils.DrawInfoBox(
+            FStylesUtils.DrawInfoBox(
                 "TargetPrefabs    prefab VFX (asset hoặc instance trong scene)\n" +
                 "Analyze          chỉ đọc: tính tile nào được TSA dùng, vẽ lưới xanh/đỏ\n" +
                 "Click ô đỏ       giữ lại tile đó thủ công (ô reachable bị khóa)\n" +

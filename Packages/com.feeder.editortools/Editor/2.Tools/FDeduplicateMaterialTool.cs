@@ -39,7 +39,7 @@ namespace Feeder
         private void DrawGuide()
         {
             GUILayout.Space(2);
-            StylesUtils.DrawInfoBox(
+            FStylesUtils.DrawInfoBox(
                 "TargetPrefabs    root chứa MeshRenderer\n" +
                 "hai material bị coi là trùng nếu cùng _BaseMap / _MainTex\n" +
                 "Resolve          giữ lại một material, gán lại toàn bộ ref còn lại"

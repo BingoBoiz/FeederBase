@@ -53,6 +53,11 @@ namespace Feeder
         private bool recolorScenePreview = true;
         private bool recolorPreviewDirty;
         private bool recolorApplied;
+        private double recolorLastCacheRebuildTime;
+
+        // minimum seconds between classification-cache rebuilds while dragging mask sliders;
+        // color edits reuse the cache and are never throttled
+        private const double RecolorCacheRebuildInterval = 0.12;
 
         private Vector2 windowScroll;
 
@@ -65,7 +70,7 @@ namespace Feeder
         private static void OpenWindow()
         {
             var window = GetWindow<FTextureModifierWindow>();
-            window.titleContent = FeederIconCatalog.CreateWindowTitle(ToolName, FeederIconCatalog.WindowMenuTitleIcon);
+            window.titleContent = FIconCatalog.CreateWindowTitle(ToolName, FIconCatalog.WindowMenuTitleIcon);
             window.minSize = new Vector2(760, 520);
             window.Show();
         }
@@ -159,7 +164,7 @@ namespace Feeder
 
         private void DrawMeshPaletteTab()
         {
-            StylesUtils.DrawDescription(
+            FStylesUtils.DrawDescription(
                 "Recolor meshes that use a palette texture: select a Renderer, load and analyze its palette usage, edit colors, then apply.");
             GUILayout.Space(6f);
 
@@ -182,7 +187,7 @@ namespace Feeder
             else
             {
                 EditorGUILayout.Space();
-                StylesUtils.DrawInfoBox("Select a renderer that uses a palette texture, then click \"Load & Analyze\".");
+                FStylesUtils.DrawInfoBox("Select a renderer that uses a palette texture, then click \"Load & Analyze\".");
             }
         }
 
@@ -377,7 +382,7 @@ namespace Feeder
 
                 if (hasPreview)
                 {
-                    StylesUtils.DrawInfoBox(
+                    FStylesUtils.DrawInfoBox(
                         "Numbers on cells match the color rows. Hover a row to highlight its target cell.");
                     PaletteGUI.DrawLegend();
 
@@ -404,7 +409,7 @@ namespace Feeder
 
             using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
-                StylesUtils.DrawInfoBox(
+                FStylesUtils.DrawInfoBox(
                     "Apply overwrites the source palette texture by writing each new color into one free transparent or white cell, " +
                     "or by reusing an existing matching cell. Existing colored cells are never overwritten, so other meshes that share " +
                     "the palette are not recolored unexpectedly. If the palette has no free cell for a color, that color is skipped and " +
@@ -528,7 +533,7 @@ namespace Feeder
 
         private void DrawTextureRecolorTab()
         {
-            StylesUtils.DrawDescription(
+            FStylesUtils.DrawDescription(
                 "Recolor a texture directly: detect its dominant colors, pick replacements, and rewrite the pixels " +
                 "while preserving shading. The mesh and its UVs are not modified.");
             GUILayout.Space(6f);
@@ -552,7 +557,7 @@ namespace Feeder
             else
             {
                 EditorGUILayout.Space();
-                StylesUtils.DrawInfoBox("Select a renderer whose material uses a texture, then click \"Load & Analyze\".");
+                FStylesUtils.DrawInfoBox("Select a renderer whose material uses a texture, then click \"Load & Analyze\".");
             }
         }
 
@@ -753,9 +758,14 @@ namespace Feeder
                 }
 
                 if (recolorPreviewMode == RecolorPreviewMode.Mask)
-                    StylesUtils.DrawInfoBox("White = pixels that will be recolored, black = pixels kept as-is.");
+                    FStylesUtils.DrawInfoBox("White = pixels that will be recolored, black = pixels kept as-is.");
 
                 UpdateRecolorPreviewIfDirty();
+
+                if (anyChange)
+                    EditorGUILayout.LabelField(
+                        $"Will recolor ~{recolorPreview.LastRecolorCoverage:P1} of pixels",
+                        EditorStyles.miniBoldLabel);
 
                 PaletteGUI.DrawTextureFitWidth(
                     RecolorPreviewLabels[(int)recolorPreviewMode],
@@ -774,6 +784,19 @@ namespace Feeder
             if ((!recolorPreviewDirty && !needsInitial) || Event.current.type != EventType.Repaint)
                 return;
 
+            // rebuilding the classification cache (mask slider drags) is the expensive path -
+            // throttle it and keep the dirty flag so the last drag state always lands on a later frame
+            bool rebuildsCache = recolorSession.IsLoaded && recolorPreview.IsMaskCacheStale(recolorSession, recolorMask);
+            if (rebuildsCache && !needsInitial &&
+                EditorApplication.timeSinceStartup - recolorLastCacheRebuildTime < RecolorCacheRebuildInterval)
+            {
+                Repaint();
+                return;
+            }
+
+            if (rebuildsCache)
+                recolorLastCacheRebuildTime = EditorApplication.timeSinceStartup;
+
             recolorPreview.UpdatePreview(recolorSession, recolorMask, recolorPreviewMode);
 
             if (recolorSession.AnyChanged && recolorScenePreview)
@@ -791,7 +814,7 @@ namespace Feeder
 
             using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
-                StylesUtils.DrawInfoBox(
+                FStylesUtils.DrawInfoBox(
                     "Apply rewrites the source texture file in place at full resolution. Every mesh and material that shares " +
                     "this texture is affected, and the file change cannot be undone. Non-PNG sources (.tga/.jpg/...) are exported " +
                     "as a new \"_recolored.png\" next to the original and assigned to the material instead.");

@@ -16,18 +16,18 @@ namespace Feeder
         [LabelText("Holder Path")]
         [ValueDropdown(nameof(GetHolderPathOptions), IsUniqueList = false, DropdownWidth = 400, DropdownHeight = 300, DrawDropdownForListElements = false)]
         [ShowInInspector, OdinSerialize]
-        private string holderPath = HierarchyPathOptionsProvider.RootToken;
+        private string holderPath = FHierarchyPathOptionsProvider.RootToken;
 
         [LabelText("Offset Y")]
         [ShowInInspector, OdinSerialize]
         private float offsetY = 0.1f;
 
-        private readonly HierarchyPathOptionsProvider pathOptionsProvider = new HierarchyPathOptionsProvider();
+        private readonly FHierarchyPathOptionsProvider pathOptionsProvider = new FHierarchyPathOptionsProvider();
 
         [Button(ButtonSizes.Large), GUIColor(0.3f, 0.8f, 1f)]
         public void AdjustOffset()
         {
-            int adjustedCount = NameOffsetAdjusterService.AdjustOffset(TargetPrefabs, holderPath, offsetY);
+            int adjustedCount = FNameOffsetAdjusterService.AdjustOffset(TargetPrefabs, holderPath, offsetY);
             Debug.Log($"<color=green>Adjusted {adjustedCount} target(s).</color>");
         }
 

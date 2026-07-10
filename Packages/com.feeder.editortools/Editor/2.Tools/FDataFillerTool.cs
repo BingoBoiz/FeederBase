@@ -104,7 +104,7 @@ namespace Feeder
         private void DrawGuide()
         {
             GUILayout.Space(2);
-            StylesUtils.DrawInfoBox(
+            FStylesUtils.DrawInfoBox(
                 "Target SO         ScriptableObject chứa Dictionary<Enum, Sprite>\n" +
                 "Target Assets     kéo sprite cần khớp vào đây\n" +
                 "Match Threshold   ngưỡng độ khớp tối thiểu (0–1), thường để 0.8–0.9\n" +

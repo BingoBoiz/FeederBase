@@ -31,7 +31,7 @@ namespace Feeder
 
         
 
-        private readonly PrefabTransformDropdownProvider transformDropdownProvider = new PrefabTransformDropdownProvider();
+        private readonly FPrefabTransformDropdownProvider transformDropdownProvider = new FPrefabTransformDropdownProvider();
 
         [Button(ButtonSizes.Large), GUIColor(0.3f, 0.8f, 1f)]
         public void CreateVariants()
@@ -41,7 +41,7 @@ namespace Feeder
                 locateModel,
                 saveFolderPath);
 
-            int createdCount = PrefabVariantCreatorService.CreatePrefabVariantsFromModels(config, TargetPrefabs);
+            int createdCount = FPrefabVariantCreatorService.CreatePrefabVariantsFromModels(config, TargetPrefabs);
             Debug.Log($"<color=green>Created {createdCount} prefab variant(s).</color>");
         }
 

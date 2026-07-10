@@ -84,7 +84,7 @@ namespace Feeder
         private void DrawGuide()
         {
             GUILayout.Space(6);
-            StylesUtils.DrawInfoBox(
+            FStylesUtils.DrawInfoBox(
                 "Source GameObjects   root chứa renderer cần chuyển\n" +
                 "Collect Mode         Skinned Only / Mesh Renderer Only / Both\n" +
                 "Active Scope         All hoặc chỉ GameObject đang active\n" +
@@ -277,7 +277,7 @@ namespace Feeder
                 if (rendererTransform == source.transform)
                     return rendererTransform;
 
-                return HierarchyPathResolver.FindDirectChildOfAncestor(source.transform, rendererTransform);
+                return FHierarchyPathResolver.FindDirectChildOfAncestor(source.transform, rendererTransform);
             }
 
             throw new System.InvalidOperationException(

@@ -40,7 +40,7 @@ namespace Feeder
         private void DrawGuide()
         {
             GUILayout.Space(2);
-            StylesUtils.DrawInfoBox(
+            FStylesUtils.DrawInfoBox(
                 "TargetPrefabs    root chứa MeshFilter + MeshRenderer\n" +
                 "chỉ quét slot _BaseMap / _MainTex của mỗi material\n" +
                 "hai texture bị coi là giống nếu cùng resolution và cùng pixel\n" +
@@ -379,10 +379,6 @@ namespace Feeder
 
             _similarGroups.RemoveAt(groupIndex);
             _reorderableListsByGroupIndex.Remove(groupIndex);
-            for (int i = _reorderableListsByGroupIndex.Count - 1; i >= 0; i--)
-            {
-                // re-key indices after remove
-            }
             _reorderableListsByGroupIndex.Clear();
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();

@@ -18,7 +18,7 @@ namespace Feeder
         [Button(ButtonSizes.Large), GUIColor(0.3f, 0.8f, 1f)]
         public void FitColliders()
         {
-            int count = MeshBoxColliderFitterService.FitAll(TargetPrefabs, overwriteExisting);
+            int count = FMeshBoxColliderFitterService.FitAll(TargetPrefabs, overwriteExisting);
             Debug.Log($"<color=green>Fitted {count} BoxCollider(s).</color>");
         }
     }

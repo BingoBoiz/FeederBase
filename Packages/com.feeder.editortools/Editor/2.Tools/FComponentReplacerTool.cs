@@ -26,13 +26,13 @@ namespace Feeder
         [Button(ButtonSizes.Large)]
         public void ReplaceComponent()
         {
-            var result = ComponentReplaceService.ReplaceComponents(ReplaceWithType, FindType, TargetPrefabs);
+            var result = FComponentReplaceService.ReplaceComponents(ReplaceWithType, FindType, TargetPrefabs);
             Debug.Log($"<color=green>Replaced {result.ReplacedCount} component(s) in {result.ModifiedPrefabs} prefab(s), {result.ModifiedSceneObjects} scene object(s).</color>");
         }
 
         private IEnumerable<ValueDropdownItem<Type>> GetComponentTypeOptions()
         {
-            return ComponentTypeOptionsProvider.GetComponentTypeOptions();
+            return FComponentTypeOptionsProvider.GetComponentTypeOptions();
         }
 
         private Type ReplaceWithType => replaceWithType ?? throw new InvalidOperationException("replace type is null.");

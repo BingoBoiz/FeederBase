@@ -44,7 +44,7 @@ namespace Feeder
         private void DrawGuide()
         {
             GUILayout.Space(2);
-            StylesUtils.DrawInfoBox(
+            FStylesUtils.DrawInfoBox(
                 "{number}         số được tách ra từ input pattern\n" +
                 "{variant}        đoạn văn bản được tách ra từ input\n" +
                 "{start:step}     đếm tự động theo asset  (vd: {0:1} → 0, 1, 2…)\n" +
@@ -161,7 +161,7 @@ namespace Feeder
             }
             if (names.Count == 0)
                 return "";
-            return StringAnalyzeUtils.BuildPatternFromNames(names);
+            return FStringAnalyzeUtils.BuildPatternFromNames(names);
         }
 
         private static class EnumPatternResolver
@@ -191,7 +191,7 @@ namespace Feeder
             private static bool ShouldSkipPlaceholder(string key)
             {
                 string t = key?.Trim();
-                return IsReservedPlaceholder(t) || SequenceNumberUtils.IsSequencePlaceholder(t);
+                return IsReservedPlaceholder(t) || FSequenceNumberUtils.IsSequencePlaceholder(t);
             }
 
             /// <summary>True when pattern contains enum placeholder (not number/variant) so slot index drives enum.</summary>
@@ -256,7 +256,7 @@ namespace Feeder
                 for (int i = 0; i < valuesArray.Length; i++)
                 {
                     var value = valuesArray.GetValue(i) ?? throw new System.InvalidOperationException($"enum value at index {i} is null.");
-                    if (EnumTypeUtils.ShouldSkipEnumMember(value.ToString())) continue;
+                    if (FEnumTypeUtils.ShouldSkipEnumMember(value.ToString())) continue;
                     filteredValues.Add(value);
                 }
                 var values = filteredValues.ToArray();
@@ -329,7 +329,7 @@ namespace Feeder
                     var oldName = go.name;
                     int indexForPattern = useEnumSlotIndex ? enumSlotIndex : i;
                     var resolvedOutput = EnumPatternResolver.Resolve(output, indexForPattern);
-                    var newName = ModifyStringUtils.ApplyPattern(oldName, input, resolvedOutput, indexForPattern);
+                    var newName = FModifyStringUtils.ApplyPattern(oldName, input, resolvedOutput, indexForPattern);
                     if (string.IsNullOrEmpty(newName))
                         throw new System.InvalidOperationException($"rename result is empty at index {i}.");
 
@@ -356,7 +356,7 @@ namespace Feeder
                 var oldFileName = Path.GetFileNameWithoutExtension(assetPath);
                 int indexForAsset = useEnumSlotIndex ? enumSlotIndex : i;
                 var resolvedAssetOutput = EnumPatternResolver.Resolve(output, indexForAsset);
-                var newAssetName = ModifyStringUtils.ApplyPattern(oldFileName, input, resolvedAssetOutput, indexForAsset);
+                var newAssetName = FModifyStringUtils.ApplyPattern(oldFileName, input, resolvedAssetOutput, indexForAsset);
                 if (string.IsNullOrEmpty(newAssetName))
                     throw new System.InvalidOperationException($"rename result is empty at index {i}.");
 

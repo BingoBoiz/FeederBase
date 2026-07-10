@@ -13,7 +13,7 @@ namespace Feeder
         private static void OpenWindow()
         {
             var window = GetWindow<FStyleMenuWindow>();
-            window.titleContent = FeederIconCatalog.CreateWindowTitle("Feeder Menu Style Window", FeederIconCatalog.WindowMenuTitleIcon);
+            window.titleContent = FIconCatalog.CreateWindowTitle("Feeder Menu Style Window", FIconCatalog.WindowMenuTitleIcon);
             window.position = GUIHelper.GetEditorWindowRect().AlignCenter(800, 600);
             window.Show();
         }

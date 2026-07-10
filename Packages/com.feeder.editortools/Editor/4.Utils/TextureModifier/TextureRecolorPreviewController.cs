@@ -20,14 +20,26 @@ namespace Feeder
         private Material[] originalSharedMaterials;
         private Renderer previewRenderer;
 
+        // classification cache: rebuilt only when the mask settings or the loaded pixels change,
+        // NOT when the user drags a replacement color
+        private RecolorMaskCache maskCache;
+        private RecolorMaskSettings maskCacheSettings;
+        private Color[] maskCachePixels;
+
         public Texture2D PreviewTexture => previewTexture;
         public bool IsScenePreviewActive { get; private set; }
+
+        /// <summary>Fraction of opaque pixels the current mask would recolor, updated with the preview.</summary>
+        public float LastRecolorCoverage { get; private set; }
 
         /// <summary>Rebuilds the window preview texture from the session's downscaled pixels.</summary>
         public void UpdatePreview(TextureRecolorSession session, RecolorMaskSettings mask, RecolorPreviewMode mode)
         {
             if (session == null || !session.IsLoaded)
                 return;
+
+            var cache = GetOrBuildMaskCache(session, mask);
+            LastRecolorCoverage = session.AnyChanged ? cache.CoverageOf(session.Clusters) : 0f;
 
             Color[] pixels;
             switch (mode)
@@ -36,10 +48,10 @@ namespace Feeder
                     pixels = session.PreviewPixels;
                     break;
                 case RecolorPreviewMode.Mask:
-                    pixels = TextureRecolorService.RecolorMulti(session.PreviewPixels, session.Clusters, mask, true);
+                    pixels = TextureRecolorService.RecolorMulti(session.PreviewPixels, session.Clusters, mask, true, cache);
                     break;
                 default:
-                    pixels = TextureRecolorService.RecolorMulti(session.PreviewPixels, session.Clusters, mask, false);
+                    pixels = TextureRecolorService.RecolorMulti(session.PreviewPixels, session.Clusters, mask, false, cache);
                     break;
             }
 
@@ -57,6 +69,25 @@ namespace Feeder
             }
             previewTexture.SetPixels(pixels);
             previewTexture.Apply(false);
+        }
+
+        /// <summary>True when the next UpdatePreview would rebuild the classification cache (expensive).</summary>
+        public bool IsMaskCacheStale(TextureRecolorSession session, RecolorMaskSettings mask)
+        {
+            return maskCache == null
+                   || !ReferenceEquals(maskCachePixels, session.PreviewPixels)
+                   || !maskCacheSettings.Equals(mask);
+        }
+
+        private RecolorMaskCache GetOrBuildMaskCache(TextureRecolorSession session, RecolorMaskSettings mask)
+        {
+            if (IsMaskCacheStale(session, mask))
+            {
+                maskCache = TextureRecolorService.BuildMaskCache(session.PreviewPixels, session.Clusters, mask);
+                maskCacheSettings = mask;
+                maskCachePixels = session.PreviewPixels;
+            }
+            return maskCache;
         }
 
         /// <summary>Swaps a cloned material with the preview texture into the renderer's slot.</summary>
@@ -119,6 +150,8 @@ namespace Feeder
 
             previewMaterial = null;
             previewTexture = null;
+            maskCache = null;
+            maskCachePixels = null;
         }
     }
 }

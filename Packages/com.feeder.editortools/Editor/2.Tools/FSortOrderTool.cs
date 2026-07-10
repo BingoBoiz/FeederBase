@@ -47,7 +47,7 @@ namespace Feeder
         private void DrawGuide()
         {
             GUILayout.Space(2);
-            StylesUtils.DrawInfoBox(
+            FStylesUtils.DrawInfoBox(
                 "Enum Type    chọn enum làm thứ tự chuẩn\n" +
                 "Threshold    ngưỡng độ khớp tối thiểu (0–1), thường để 0.8–0.9\n" +
                 "Analyze      xem bảng map enum → asset kèm % khớp\n" +
@@ -62,7 +62,7 @@ namespace Feeder
         [Button("Analyze", ButtonSizes.Medium)]
         private void Analyze()
         {
-            Type enumType = EnumTypeUtils.ResolveEnumType(_selectedEnumTypeName);
+            Type enumType = FEnumTypeUtils.ResolveEnumType(_selectedEnumTypeName);
             if (enumType == null)
                 throw new InvalidOperationException("Select an enum type first.");
             if (TargetAssets == null)
@@ -82,7 +82,7 @@ namespace Feeder
             {
                 object enumVal = enumValues.GetValue(i);
                 string enumName = enumVal?.ToString() ?? "";
-                if (EnumTypeUtils.ShouldSkipEnumMember(enumName))
+                if (FEnumTypeUtils.ShouldSkipEnumMember(enumName))
                     continue;
 
                 string normalizedEnum = FuzzyMatchUtils.Normalize(enumName);
@@ -143,6 +143,6 @@ namespace Feeder
         private bool HasMapping => _mappingRows?.Count > 0;
 
         private IEnumerable<ValueDropdownItem<string>> GetEnumTypeDropdown()
-            => EnumTypeUtils.GetEnumTypeDropdown();
+            => FEnumTypeUtils.GetEnumTypeDropdown();
     }
 }

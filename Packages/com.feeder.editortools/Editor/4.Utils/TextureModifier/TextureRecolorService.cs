@@ -178,22 +178,126 @@ namespace Feeder
         }
 
         /// <summary>
-        /// Recolors pixels for every changed cluster in one pass. Each pixel is masked against all
-        /// changed clusters and the highest-weight cluster wins; the recolor happens in linear space
-        /// (target * source / reference, clamped by shadingClamp) so shading is preserved.
-        /// With <paramref name="maskOnly"/> the combined mask is returned as grayscale.
+        /// Builds the per-pixel classification cache: for every pixel, the nearest cluster by HSV
+        /// distance over ALL clusters and its mask weight. The result depends only on the cluster
+        /// reference colors and the mask settings — not on the chosen replacement colors — so it
+        /// survives color-picker edits. Runs in parallel; touches no Unity objects.
+        /// </summary>
+        public static RecolorMaskCache BuildMaskCache(Color[] pixels, IReadOnlyList<RecolorCluster> clusters,
+            RecolorMaskSettings mask)
+        {
+            int n = clusters != null ? clusters.Count : 0;
+            var refH = new float[n];
+            var refS = new float[n];
+            var refV = new float[n];
+            for (int c = 0; c < n; c++)
+                if (clusters[c] != null)
+                    Color.RGBToHSV((Color)clusters[c].color, out refH[c], out refS[c], out refV[c]);
+
+            var cache = new RecolorMaskCache
+            {
+                clusterIndex = new sbyte[pixels.Length],
+                weight = new byte[pixels.Length],
+                pixelsPerCluster = new int[n]
+            };
+
+            const int chunkSize = 65536;
+            int chunkCount = (pixels.Length + chunkSize - 1) / chunkSize;
+            object gate = new object();
+
+            System.Threading.Tasks.Parallel.For(0, chunkCount,
+                () => (counts: new int[n], opaque: 0),
+                (chunk, _, local) =>
+                {
+                    int start = chunk * chunkSize;
+                    int end = Mathf.Min(start + chunkSize, pixels.Length);
+                    for (int i = start; i < end; i++)
+                    {
+                        var pixel = pixels[i];
+                        Color.RGBToHSV(pixel, out float h, out float s, out float v);
+
+                        float bestDist = float.MaxValue;
+                        int nearest = -1;
+                        for (int c = 0; c < n; c++)
+                        {
+                            if (clusters[c] == null) continue;
+                            float d = MaskDistance(h, s, v, refH[c], refS[c], refV[c], mask);
+                            if (d < bestDist)
+                            {
+                                bestDist = d;
+                                nearest = c;
+                            }
+                        }
+
+                        float w = nearest < 0 ? 0f
+                            : Mathf.Clamp01((1f + mask.softness - bestDist) / mask.softness);
+                        if (w <= 0f)
+                            nearest = -1;
+
+                        cache.clusterIndex[i] = (sbyte)nearest;
+                        cache.weight[i] = (byte)Mathf.RoundToInt(w * 255f);
+
+                        if (pixel.a >= 0.5f)
+                        {
+                            local.opaque++;
+                            if (nearest >= 0 && cache.weight[i] >= 128)
+                                local.counts[nearest]++;
+                        }
+                    }
+                    return local;
+                },
+                local =>
+                {
+                    lock (gate)
+                    {
+                        cache.opaqueCount += local.opaque;
+                        for (int c = 0; c < n; c++)
+                            cache.pixelsPerCluster[c] += local.counts[c];
+                    }
+                });
+
+            return cache;
+        }
+
+        /// <summary>
+        /// Recolors pixels for every changed cluster in one pass, building the classification
+        /// cache internally. Prefer the cache overload when the same pixels are recolored repeatedly.
         /// </summary>
         public static Color[] RecolorMulti(Color[] source, IReadOnlyList<RecolorCluster> clusters,
             RecolorMaskSettings mask, bool maskOnly, Action<float> progress = null)
         {
-            var changed = new List<RecolorCluster>();
-            if (clusters != null)
-                foreach (var c in clusters)
-                    if (c != null && c.Changed)
-                        changed.Add(c);
+            return RecolorMulti(source, clusters, mask, maskOnly, BuildMaskCache(source, clusters, mask), progress);
+        }
+
+        /// <summary>
+        /// Recolors pixels using a prebuilt classification cache. Each pixel was assigned to its
+        /// nearest cluster (changed or not); only pixels whose cluster is changed are recolored, so
+        /// unchanged clusters keep their own pixels and the mask matches the displayed coverage.
+        /// Shading is preserved by scaling the target color with a scalar brightness ratio
+        /// (pixel luminance / reference luminance, clamped by shadingClamp), so the recolored pixel
+        /// keeps the exact hue/saturation of the picked color and only its lightness follows the
+        /// source. With <paramref name="maskOnly"/> the mask is returned as grayscale.
+        /// </summary>
+        public static Color[] RecolorMulti(Color[] source, IReadOnlyList<RecolorCluster> clusters,
+            RecolorMaskSettings mask, bool maskOnly, RecolorMaskCache cache, Action<float> progress = null)
+        {
+            int n = clusters != null ? clusters.Count : 0;
+            var isChanged = new bool[n];
+            var refLum = new float[n];
+            var tgtLin = new Color[n];
+            bool anyChanged = false;
+            for (int c = 0; c < n; c++)
+            {
+                if (clusters[c] == null) continue;
+                var lin = ((Color)clusters[c].color).linear;
+                refLum[c] = Mathf.Max(LinearLuminance(lin), 0.0001f);
+                tgtLin[c] = clusters[c].newColor.linear;
+                isChanged[c] = clusters[c].Changed;
+                anyChanged |= isChanged[c];
+            }
 
             var result = new Color[source.Length];
-            if (changed.Count == 0)
+            if (!anyChanged)
             {
                 if (maskOnly)
                     for (int i = 0; i < source.Length; i++)
@@ -203,24 +307,6 @@ namespace Feeder
                 return result;
             }
 
-            int n = changed.Count;
-            var refH = new float[n];
-            var refS = new float[n];
-            var refV = new float[n];
-            var refLin = new Color[n];
-            var tgtLin = new Color[n];
-            for (int i = 0; i < n; i++)
-            {
-                var reference = (Color)changed[i].color;
-                Color.RGBToHSV(reference, out refH[i], out refS[i], out refV[i]);
-                var lin = reference.linear;
-                lin.r = Mathf.Max(lin.r, 0.001f);
-                lin.g = Mathf.Max(lin.g, 0.001f);
-                lin.b = Mathf.Max(lin.b, 0.001f);
-                refLin[i] = lin;
-                tgtLin[i] = changed[i].newColor.linear;
-            }
-
             int progressStep = Mathf.Max(1, source.Length / 20);
             for (int i = 0; i < source.Length; i++)
             {
@@ -228,39 +314,31 @@ namespace Feeder
                     progress((float)i / source.Length);
 
                 var pixel = source[i];
-                Color.RGBToHSV(pixel, out float h, out float s, out float v);
-
-                float bestWeight = 0f;
-                int bestCluster = -1;
-                for (int c = 0; c < n; c++)
-                {
-                    float weight = MaskWeight(h, s, v, refH[c], refS[c], refV[c], mask);
-                    if (weight > bestWeight)
-                    {
-                        bestWeight = weight;
-                        bestCluster = c;
-                    }
-                }
+                int cluster = cache.clusterIndex[i];
+                float weight = cluster >= 0 && isChanged[cluster] ? cache.weight[i] / 255f : 0f;
 
                 if (maskOnly)
                 {
-                    result[i] = new Color(bestWeight, bestWeight, bestWeight, 1f);
+                    result[i] = new Color(weight, weight, weight, 1f);
                     continue;
                 }
 
-                if (bestCluster < 0)
+                if (weight <= 0f)
                 {
                     result[i] = pixel;
                     continue;
                 }
 
                 Color lin = pixel.linear;
+                // scalar brightness ratio keeps the target hue/saturation intact and only
+                // reproduces the source shading (a per-channel ratio would drag the source hue in)
+                float shading = Mathf.Min(LinearLuminance(lin) / refLum[cluster], mask.shadingClamp);
                 var recoloredLin = new Color(
-                    Mathf.Clamp01(tgtLin[bestCluster].r * Mathf.Min(lin.r / refLin[bestCluster].r, mask.shadingClamp)),
-                    Mathf.Clamp01(tgtLin[bestCluster].g * Mathf.Min(lin.g / refLin[bestCluster].g, mask.shadingClamp)),
-                    Mathf.Clamp01(tgtLin[bestCluster].b * Mathf.Min(lin.b / refLin[bestCluster].b, mask.shadingClamp)),
+                    Mathf.Clamp01(tgtLin[cluster].r * shading),
+                    Mathf.Clamp01(tgtLin[cluster].g * shading),
+                    Mathf.Clamp01(tgtLin[cluster].b * shading),
                     lin.a);
-                var final = Color.Lerp(pixel, recoloredLin.gamma, bestWeight);
+                var final = Color.Lerp(pixel, recoloredLin.gamma, weight);
                 final.a = pixel.a;
                 result[i] = final;
             }
@@ -268,7 +346,13 @@ namespace Feeder
             return result;
         }
 
-        private static float MaskWeight(float h, float s, float v,
+        /// <summary>Rec. 709 relative luminance of a linear-space color.</summary>
+        private static float LinearLuminance(in Color linear)
+        {
+            return 0.2126f * linear.r + 0.7152f * linear.g + 0.0722f * linear.b;
+        }
+
+        private static float MaskDistance(float h, float s, float v,
             float refH, float refS, float refV, in RecolorMaskSettings mask)
         {
             float hueDist = Mathf.Abs(Mathf.DeltaAngle(h * 360f, refH * 360f)) / Mathf.Max(1f, mask.hueToleranceDeg);
@@ -278,8 +362,37 @@ namespace Feeder
             // very dark pixels have unreliable hue (eyebrows, lashes) - rely on value distance
             if (v < 0.12f) hueDist = 0f;
 
-            float d = Mathf.Max(hueDist, Mathf.Max(satDist, valDist));
-            return Mathf.Clamp01((1f + mask.softness - d) / mask.softness);
+            return Mathf.Max(hueDist, Mathf.Max(satDist, valDist));
+        }
+    }
+
+    /// <summary>
+    /// Per-pixel mask classification, index-aligned with the pixel array it was built from.
+    /// Depends only on the cluster reference colors and mask settings, so edits to the
+    /// replacement colors can reuse it.
+    /// </summary>
+    public sealed class RecolorMaskCache
+    {
+        /// <summary>Nearest cluster per pixel, -1 when out of tolerance of every cluster.</summary>
+        public sbyte[] clusterIndex;
+        /// <summary>Mask weight per pixel, 0..255.</summary>
+        public byte[] weight;
+        /// <summary>Opaque pixels with weight >= 0.5 per cluster.</summary>
+        public int[] pixelsPerCluster;
+        public int opaqueCount;
+
+        /// <summary>Fraction of opaque pixels the mask would recolor for the currently changed clusters.</summary>
+        public float CoverageOf(IReadOnlyList<RecolorCluster> clusters)
+        {
+            if (opaqueCount == 0 || clusters == null)
+                return 0f;
+
+            int sum = 0;
+            int n = Mathf.Min(clusters.Count, pixelsPerCluster.Length);
+            for (int c = 0; c < n; c++)
+                if (clusters[c] != null && clusters[c].Changed)
+                    sum += pixelsPerCluster[c];
+            return (float)sum / opaqueCount;
         }
     }
 }

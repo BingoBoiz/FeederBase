@@ -66,7 +66,7 @@ namespace Feeder
         private void DrawGuide()
         {
             GUILayout.Space(2);
-            StylesUtils.DrawInfoBox(
+            FStylesUtils.DrawInfoBox(
                 "TargetPrefabs     root của object cần unpack\n" +
                 "Collect Mode      Skinned Only / Mesh Filter Only / Both\n" +
                 "Mesh Naming       tên file mesh theo mesh gốc hay theo GameObject\n" +

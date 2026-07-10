@@ -17,7 +17,7 @@ namespace Feeder
         private static void OpenWindow()
         {
             var window = GetWindow<FFindReferenceWindow>();
-            window.titleContent = FeederIconCatalog.CreateWindowTitle("Feeder Asset Cache", FeederIconCatalog.WindowMenuTitleIcon);
+            window.titleContent = FIconCatalog.CreateWindowTitle("Feeder Asset Cache", FIconCatalog.WindowMenuTitleIcon);
             window.position = GUIHelper.GetEditorWindowRect().AlignCenter(1100, 680);
             window.Show();
         }

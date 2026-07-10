@@ -42,7 +42,7 @@ namespace Feeder
         private void DrawGuide()
         {
             GUILayout.Space(2);
-            StylesUtils.DrawInfoBox(
+            FStylesUtils.DrawInfoBox(
                 "Auto Discover   phát hiện nhóm từ token chung trong tên (_/-/. delimiter)\n" +
                 "Min Asset Count ngưỡng tối thiểu asset khớp pattern (thường 2–3)\n" +
                 "Discover Groups xóa nhóm cũ, tạo lại + Uncategorized + Original\n" +

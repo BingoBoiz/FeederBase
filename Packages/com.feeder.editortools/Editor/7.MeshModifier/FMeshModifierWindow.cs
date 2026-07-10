@@ -10,9 +10,10 @@ using Object = UnityEngine.Object;
 namespace Feeder
 {
     /// <summary>
-    /// Editor window that bakes many meshes/materials into one combined mesh:
-    /// source textures are packed into an atlas, UVs are remapped and all meshes
-    /// are merged into a single mesh + material + prefab (MeshBaker pipeline).
+    /// Two-tab mesh utility window. Merge tab: bakes many meshes/materials into one
+    /// combined mesh (textures packed into an atlas, UVs remapped, MeshBaker pipeline).
+    /// Split tab: splits one scene mesh into separate part meshes (UV islands, manual
+    /// vertex picking or a cutting volume) with a Scene View helper overlay.
     /// </summary>
     public sealed class FMeshModifierWindow : OdinEditorWindow
     {
@@ -20,18 +21,30 @@ namespace Feeder
         private const int MenuPriority = 3;
         private const float LeftColumnWidth = 300f;
         private const float RendererTableHeight = 180f;
+        private const float PartTableHeight = 160f;
 
         private static readonly Color HoverFill = new Color(0f, 1f, 1f, 0.12f);
         private static readonly Color AltRowFill = new Color(1f, 1f, 1f, 0.03f);
         private static readonly Color WarnRed = new Color(1f, 0.45f, 0.45f);
 
+        private enum Tab { Merge, Split }
+
+        private static readonly string[] TabLabels = { "Gộp Mesh (Merge)", "Tách Mesh (Split)" };
+        private static readonly string[] SplitModeLabels = { "Đơn giản (UV)", "Thủ công (Đỉnh)", "Nâng cao (Khối)" };
+
         private readonly FMeshBakeSession session = new FMeshBakeSession();
         private readonly FMeshBakeSettings settings = new FMeshBakeSettings();
+        private readonly FMeshSplitSession splitSession = new FMeshSplitSession();
+        private readonly FMeshSplitSettings splitSettings = new FMeshSplitSettings();
 
+        private Tab tab;
+        private int splitSelectedTriangleCount;
         private Vector2 windowScroll;
         private Vector2 tableScroll;
+        private Vector2 partTableScroll;
         private int hoverRowIndex = -1;
         private bool guideFoldout;
+        private bool splitGuideFoldout;
         private bool advancedFoldout;
         private string customPropsText = string.Empty;
         private string ignorePropsText = string.Empty;
@@ -40,7 +53,7 @@ namespace Feeder
         private static void OpenWindow()
         {
             var window = GetWindow<FMeshModifierWindow>();
-            window.titleContent = FeederIconCatalog.CreateWindowTitle(ToolName, FeederIconCatalog.WindowMenuTitleIcon);
+            window.titleContent = FIconCatalog.CreateWindowTitle(ToolName, FIconCatalog.WindowMenuTitleIcon);
             window.minSize = new Vector2(760, 560);
             window.Show();
         }
@@ -51,12 +64,55 @@ namespace Feeder
             wantsMouseMove = true;
         }
 
+        protected override void OnDisable()
+        {
+            FMeshSplitterSceneOverlay.CloseOverlay();
+            base.OnDisable();
+        }
+
         protected override void OnImGUI()
         {
-            GUILayout.Space(6f);
+            GUILayout.Space(4f);
+            int newTab = GUILayout.Toolbar((int)tab, TabLabels, EditorStyles.toolbarButton, GUILayout.Height(24f));
+            if (newTab != (int)tab)
+                SwitchTab((Tab)newTab);
+
+            GUILayout.Space(4f);
             windowScroll = EditorGUILayout.BeginScrollView(windowScroll, GUILayout.ExpandHeight(true));
 
-            StylesUtils.DrawDescription(
+            if (tab == Tab.Merge)
+                DrawMergeTab();
+            else
+                DrawSplitTab();
+
+            EditorGUILayout.EndScrollView();
+
+            if (tab == Tab.Merge && session.IsAnalyzed && session.Report.Rows.Count > 0)
+            {
+                EditorGUILayout.Space();
+                DrawActionBar();
+            }
+            else if (tab == Tab.Split && splitSession.IsAnalyzed && !splitSession.Analysis.IsStale)
+            {
+                EditorGUILayout.Space();
+                DrawSplitActionBar();
+            }
+        }
+
+        private void SwitchTab(Tab next)
+        {
+            if (tab == Tab.Split)
+                FMeshSplitterSceneOverlay.CloseOverlay();
+
+            tab = next;
+            GUI.FocusControl(null);
+            SceneView.RepaintAll();
+            Repaint();
+        }
+
+        private void DrawMergeTab()
+        {
+            FStylesUtils.DrawDescription(
                 "Gộp nhiều mesh và material thành một: texture của các object nguồn được đóng gói vào một atlas, " +
                 "UV được ánh xạ lại, và toàn bộ mesh được merge thành một mesh + material + prefab duy nhất. " +
                 "Object nguồn không bao giờ bị chỉnh sửa.");
@@ -79,17 +135,9 @@ namespace Feeder
             else
             {
                 EditorGUILayout.Space();
-                StylesUtils.DrawInfoBox(
+                FStylesUtils.DrawInfoBox(
                     "Kéo-thả prefab hoặc object trong scene vào danh sách Targets (hoặc bấm \"Use Selection\"), " +
                     "sau đó bấm \"Analyze\" để kiểm tra mesh, material và texture trước khi bake.");
-            }
-
-            EditorGUILayout.EndScrollView();
-
-            if (session.IsAnalyzed && session.Report.Rows.Count > 0)
-            {
-                EditorGUILayout.Space();
-                DrawActionBar();
             }
         }
 
@@ -588,7 +636,7 @@ namespace Feeder
 
         private void DrawActionBar()
         {
-            StylesUtils.DrawInfoBox(
+            FStylesUtils.DrawInfoBox(
                 "Bake sẽ ghi ra: prefab gộp, mesh, material, texture atlas và file bake-results vào thư mục xuất. " +
                 "Object nguồn và asset gốc không bao giờ bị chỉnh sửa.");
             GUILayout.Space(4f);
@@ -646,6 +694,558 @@ namespace Feeder
 
             session.LastResult = result;
             ShowNotification(new GUIContent("Đã bake xong mesh gộp"));
+            Repaint();
+        }
+
+        // ================================================================ Split tab
+
+        private void DrawSplitTab()
+        {
+            FStylesUtils.DrawDescription(
+                "Tách một mesh thành nhiều phần riêng biệt: tự động theo UV island, chọn đỉnh thủ công, " +
+                "hoặc cắt bằng khối (box/sphere/plane/circle). Object nguồn không bao giờ bị chỉnh sửa.");
+            GUILayout.Space(4f);
+
+            DrawSplitGuideSection();
+            GUILayout.Space(4f);
+
+            DrawSplitTargetSection();
+
+            if (!splitSession.IsAnalyzed)
+            {
+                EditorGUILayout.Space();
+                FStylesUtils.DrawInfoBox(
+                    "Chọn một object trong scene có MeshFilter (kéo-thả hoặc bấm \"Use Selection\"), " +
+                    "sau đó bấm \"Analyze\" để phân tích mesh thành các phần.");
+                return;
+            }
+
+            if (splitSession.Analysis.IsStale)
+            {
+                EditorGUILayout.Space();
+                EditorGUILayout.HelpBox("Mesh đã thay đổi sau khi Analyze. Hãy bấm Analyze lại.", MessageType.Warning);
+                return;
+            }
+
+            // Computed once per repaint; the mask walk is O(triangles) and several sections need it.
+            splitSelectedTriangleCount = splitSession.CountSelectedTriangles(splitSettings);
+
+            EditorGUILayout.Space();
+            DrawSplitModeSection();
+            EditorGUILayout.Space();
+            DrawSplitOutputSection();
+        }
+
+        private void DrawSplitGuideSection()
+        {
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                splitGuideFoldout = EditorGUILayout.Foldout(splitGuideFoldout, "Hướng dẫn sử dụng", true, EditorStyles.foldoutHeader);
+                if (!splitGuideFoldout)
+                    return;
+
+                var stepStyle = new GUIStyle(EditorStyles.wordWrappedLabel) { fontSize = 11 };
+                EditorGUILayout.LabelField(
+                    "1.  Chọn object trong scene có MeshFilter (mesh cần bật Read/Write trong import settings).", stepStyle);
+                EditorGUILayout.LabelField(
+                    "2.  Bấm \"Analyze\" — tool phân tích UV để chia mesh thành các phần (ví dụ cây → lá + thân).", stepStyle);
+                EditorGUILayout.LabelField(
+                    "3.  Bấm \"Mở Scene Tool\" để chọn phần trực quan trong Scene View: " +
+                    "hover để xem phần, click để chọn. Chế độ Thủ công cho phép chọn từng đỉnh (click/kéo brush); " +
+                    "chế độ Nâng cao cho phép đặt khối cắt và di chuyển bằng gizmo.", stepStyle);
+                EditorGUILayout.LabelField(
+                    "4.  Bấm \"Tách phần đã chọn\" (2 mảnh: phần chọn + phần còn lại) hoặc " +
+                    "\"Tách tất cả part\" (mỗi part một mesh riêng).", stepStyle);
+                EditorGUILayout.LabelField(
+                    "5.  Kết quả: mỗi phần một mesh asset + một prefab có con cho từng phần, giữ nguyên material.", stepStyle);
+            }
+        }
+
+        private void DrawSplitTargetSection()
+        {
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                EditorGUILayout.LabelField(
+                    new GUIContent("Target", "Object trong scene có MeshFilter sẽ được tách"),
+                    EditorStyles.boldLabel);
+
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    EditorGUI.BeginChangeCheck();
+                    var newTarget = (GameObject)EditorGUILayout.ObjectField(splitSession.Target, typeof(GameObject), true);
+                    if (EditorGUI.EndChangeCheck())
+                        SetSplitTarget(newTarget);
+
+                    if (GUILayout.Button(
+                            new GUIContent("Use Selection", "Dùng object đang chọn trong Hierarchy"),
+                            GUILayout.Width(110f)))
+                        SetSplitTarget(Selection.activeGameObject);
+                }
+
+                Mesh mesh = splitSession.TargetMesh;
+                bool canAnalyze = false;
+
+                if (splitSession.Target == null)
+                {
+                    EditorGUILayout.HelpBox("Chưa chọn object mục tiêu.", MessageType.Info);
+                }
+                else if (splitSession.TargetMeshFilter == null || mesh == null)
+                {
+                    bool hasSkinned = splitSession.Target.GetComponentInChildren<SkinnedMeshRenderer>() != null;
+                    EditorGUILayout.HelpBox(hasSkinned
+                            ? "SkinnedMeshRenderer chưa được hỗ trợ (v1). Object cần có MeshFilter với mesh."
+                            : "Object cần có component MeshFilter với mesh hợp lệ.",
+                        MessageType.Info);
+                }
+                else if (!mesh.isReadable)
+                {
+                    EditorGUILayout.HelpBox(
+                        $"Mesh \"{mesh.name}\" không đọc được từ CPU (Read/Write đang tắt). " +
+                        "Hãy bật Read/Write trong import settings của model rồi Analyze lại.",
+                        MessageType.Warning);
+                }
+                else
+                {
+                    canAnalyze = true;
+                    long indexCount = 0;
+                    for (int s = 0; s < mesh.subMeshCount; s++)
+                        indexCount += mesh.GetIndexCount(s);
+                    EditorGUILayout.LabelField(
+                        $"Mesh: {mesh.name} — {mesh.vertexCount:N0} vertices, {indexCount / 3:N0} triangles, {mesh.subMeshCount} submesh",
+                        EditorStyles.miniLabel);
+                    if (splitSession.IsAnalyzed && !splitSession.Analysis.HasUv)
+                        FStylesUtils.DrawInfoBox(
+                            "Mesh không có UV — chế độ Đơn giản tách theo các khối liền nhau (spatial islands) thay vì UV island.");
+                }
+
+                GUILayout.Space(4f);
+                using (new EditorGUI.DisabledScope(!canAnalyze))
+                {
+                    Color originalBg = GUI.backgroundColor;
+                    GUI.backgroundColor = new Color(0.4f, 0.8f, 1f);
+                    if (GUILayout.Button(
+                            new GUIContent("Analyze", "Phân tích mesh: weld vertex, tìm UV island và gộp thành các part"),
+                            GUILayout.Height(26)))
+                        AnalyzeSplitTarget();
+                    GUI.backgroundColor = originalBg;
+                }
+            }
+        }
+
+        private void SetSplitTarget(GameObject newTarget)
+        {
+            if (newTarget == splitSession.Target)
+                return;
+
+            FMeshSplitterSceneOverlay.CloseOverlay();
+            splitSession.Target = newTarget;
+            splitSession.InvalidateAnalysis();
+            GUI.FocusControl(null);
+        }
+
+        private void AnalyzeSplitTarget()
+        {
+            Mesh mesh = splitSession.TargetMesh;
+            if (mesh == null)
+                return;
+
+            splitSession.InvalidateAnalysis();
+            splitSession.Analysis = FMeshSplitAnalyzer.Analyze(mesh, splitSettings);
+            if (splitSession.Analysis == null)
+            {
+                EditorUtility.DisplayDialog(ToolName, "Analyze thất bại — mesh không đọc được.", "OK");
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(splitSettings.baseName) || splitSettings.baseName == "SplitMesh")
+                splitSettings.baseName = splitSession.Target.name + "_Split";
+
+            FMeshSplitterSceneOverlay.NotifyAnalysisChanged();
+            Repaint();
+        }
+
+        private void DrawSplitModeSection()
+        {
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                EditorGUILayout.LabelField(
+                    new GUIContent("Split Mode", "Cách chọn phần mesh cần tách"),
+                    EditorStyles.boldLabel);
+
+                EditorGUI.BeginChangeCheck();
+                int newMode = GUILayout.Toolbar((int)splitSettings.mode, SplitModeLabels, GUILayout.Height(22f));
+                if (EditorGUI.EndChangeCheck() && newMode != (int)splitSettings.mode)
+                {
+                    splitSettings.mode = (FMeshSplitMode)newMode;
+                    GUI.FocusControl(null);
+                    FMeshSplitterSceneOverlay.NotifySelectionChanged();
+                    SceneView.RepaintAll();
+                }
+
+                GUILayout.Space(4f);
+                switch (splitSettings.mode)
+                {
+                    case FMeshSplitMode.Simple:
+                        DrawSimpleModeSettings();
+                        break;
+                    case FMeshSplitMode.Manual:
+                        DrawManualModeSettings();
+                        break;
+                    case FMeshSplitMode.Advanced:
+                        DrawAdvancedModeSettings();
+                        break;
+                }
+
+                GUILayout.Space(6f);
+                DrawSceneToolButton();
+            }
+        }
+
+        private void DrawSimpleModeSettings()
+        {
+            FMeshSplitAnalysis analysis = splitSession.Analysis;
+
+            if (analysis.HasUv)
+            {
+                EditorGUI.BeginChangeCheck();
+                splitSettings.mergeRepeatedIslands = EditorGUILayout.Toggle(
+                    new GUIContent("Gộp island lặp",
+                        "Gộp các UV island dùng chung vùng atlas (ví dụ nhiều lá cây cùng texture) thành một part."),
+                    splitSettings.mergeRepeatedIslands);
+                using (new EditorGUI.DisabledScope(!splitSettings.mergeRepeatedIslands))
+                {
+                    splitSettings.uvMergeOverlap = EditorGUILayout.Slider(
+                        new GUIContent("Ngưỡng gộp UV",
+                            "Tỉ lệ chồng lấp UV tối thiểu để gộp 2 island thành 1 part. Tăng lên nếu bị gộp nhầm, giảm xuống nếu ra quá nhiều part."),
+                        splitSettings.uvMergeOverlap, 0f, 1f);
+                }
+                if (EditorGUI.EndChangeCheck())
+                {
+                    FMeshSplitAnalyzer.Remerge(analysis, splitSettings);
+                    splitSession.SelectedPartIds.Clear();
+                    FMeshSplitterSceneOverlay.NotifyAnalysisChanged();
+                }
+            }
+
+            GUILayout.Space(4f);
+            if (analysis.Parts.Count > 256)
+                EditorGUILayout.HelpBox(
+                    $"Quá nhiều part ({analysis.Parts.Count}) — hãy tăng \"Ngưỡng gộp UV\" hoặc bật \"Gộp island lặp\".",
+                    MessageType.Warning);
+
+            EditorGUILayout.LabelField(
+                $"Parts ({analysis.Parts.Count}) — {splitSession.SelectedPartIds.Count} đã chọn",
+                EditorStyles.miniBoldLabel);
+            DrawPartTable(analysis);
+        }
+
+        private void DrawPartTable(FMeshSplitAnalysis analysis)
+        {
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                EditorGUILayout.LabelField("Chọn", EditorStyles.miniBoldLabel, GUILayout.Width(40f));
+                EditorGUILayout.LabelField("Màu", EditorStyles.miniBoldLabel, GUILayout.Width(34f));
+                EditorGUILayout.LabelField("Tên part", EditorStyles.miniBoldLabel, GUILayout.Width(150f));
+                EditorGUILayout.LabelField("Tam giác", EditorStyles.miniBoldLabel, GUILayout.Width(70f));
+                EditorGUILayout.LabelField(new GUIContent("Xuất", "Bỏ tick để gộp part này vào phần \"Rest\" khi Tách tất cả part"),
+                    EditorStyles.miniBoldLabel, GUILayout.Width(40f));
+            }
+
+            partTableScroll = EditorGUILayout.BeginScrollView(partTableScroll,
+                GUILayout.Height(Mathf.Min(PartTableHeight, 20f * analysis.Parts.Count + 8f)));
+
+            for (int i = 0; i < analysis.Parts.Count; i++)
+            {
+                FMeshPartInfo part = analysis.Parts[i];
+
+                Rect rowRect = EditorGUILayout.BeginHorizontal(GUILayout.Height(18f));
+                if (Event.current.type == EventType.Repaint && (i & 1) == 1)
+                    EditorGUI.DrawRect(rowRect, AltRowFill);
+
+                bool wasSelected = splitSession.SelectedPartIds.Contains(part.PartId);
+                bool nowSelected = EditorGUILayout.Toggle(wasSelected, GUILayout.Width(40f));
+                if (nowSelected != wasSelected)
+                {
+                    if (nowSelected) splitSession.SelectedPartIds.Add(part.PartId);
+                    else splitSession.SelectedPartIds.Remove(part.PartId);
+                    FMeshSplitterSceneOverlay.NotifySelectionChanged();
+                }
+
+                Rect swatchRect = GUILayoutUtility.GetRect(26f, 14f, GUILayout.Width(34f));
+                swatchRect.y += 2f;
+                swatchRect.width = 26f;
+                EditorGUI.DrawRect(swatchRect, part.Color);
+
+                part.Name = EditorGUILayout.DelayedTextField(part.Name, GUILayout.Width(150f));
+                EditorGUILayout.LabelField(part.TriangleCount.ToString("N0"), EditorStyles.miniLabel, GUILayout.Width(70f));
+                part.IncludeInSplit = EditorGUILayout.Toggle(part.IncludeInSplit, GUILayout.Width(40f));
+
+                EditorGUILayout.EndHorizontal();
+            }
+
+            EditorGUILayout.EndScrollView();
+        }
+
+        private void DrawManualModeSettings()
+        {
+            splitSettings.pickRadiusPixels = EditorGUILayout.Slider(
+                new GUIContent("Pick Radius (px)", "Khoảng cách tối đa (pixel) từ chuột đến đỉnh khi click chọn từng đỉnh."),
+                splitSettings.pickRadiusPixels, 4f, 40f);
+            splitSettings.brushRadiusPixels = EditorGUILayout.Slider(
+                new GUIContent("Brush Radius (px)", "Bán kính brush (pixel) khi kéo chuột để chọn nhiều đỉnh."),
+                splitSettings.brushRadiusPixels, 5f, 120f);
+
+            GUILayout.Space(2f);
+            EditorGUILayout.LabelField(
+                $"{splitSession.SelectedCanonicalVerts.Count:N0} đỉnh đã chọn — {splitSelectedTriangleCount:N0} tam giác",
+                EditorStyles.miniLabel);
+            FStylesUtils.DrawInfoBox(
+                "Mở Scene Tool để chọn đỉnh trong Scene View: click = chọn/bỏ (Shift thêm, Ctrl bỏ), kéo = brush. " +
+                "Tam giác được tách khi cả 3 đỉnh được chọn — dùng Grow để mở rộng vùng chọn.");
+        }
+
+        private void DrawAdvancedModeSettings()
+        {
+            EditorGUI.BeginChangeCheck();
+            splitSettings.primitiveKind = (FSplitPrimitiveKind)EditorGUILayout.EnumPopup(
+                new GUIContent("Khối cắt",
+                    "Box: hộp theo scale. Sphere: cầu, bán kính = max(scale)/2. " +
+                    "Plane: mặt phẳng tách đôi theo trục +Y của gizmo. Circle: trụ vô hạn quanh trục Y."),
+                splitSettings.primitiveKind);
+            if (EditorGUI.EndChangeCheck())
+            {
+                splitSession.Primitive.Kind = splitSettings.primitiveKind;
+                FMeshSplitterSceneOverlay.NotifySelectionChanged();
+            }
+
+            GUILayout.Space(2f);
+            EditorGUILayout.LabelField(
+                $"{splitSelectedTriangleCount:N0} tam giác bên trong khối",
+                EditorStyles.miniLabel);
+            FStylesUtils.DrawInfoBox(
+                "Mở Scene Tool — tool sẽ tạo một khối cắt trong scene, di chuyển/xoay/scale bằng gizmo của Unity. " +
+                "Tam giác có tâm nằm trong khối sẽ thuộc phần được tách (không slice tam giác).");
+        }
+
+        private void DrawSceneToolButton()
+        {
+            if (FMeshSplitterSceneOverlay.IsOpen)
+            {
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    EditorGUILayout.LabelField("Scene Tool đang mở trong Scene View.", EditorStyles.miniBoldLabel);
+                    if (GUILayout.Button("Đóng", GUILayout.Width(70f)))
+                    {
+                        FMeshSplitterSceneOverlay.CloseOverlay();
+                        Repaint();
+                    }
+                }
+                return;
+            }
+
+            Color originalBg = GUI.backgroundColor;
+            GUI.backgroundColor = new Color(0.5f, 0.9f, 0.6f);
+            if (GUILayout.Button(
+                    new GUIContent("Mở Scene Tool",
+                        "Mở cửa sổ tool nổi trong Scene View để chọn phần mesh trực quan (hover/click/brush/gizmo)."),
+                    GUILayout.Height(26)))
+            {
+                FMeshSplitterSceneOverlay.Open(splitSession, splitSettings, Repaint, DoSplitSelected, DoSplitAllParts);
+                Repaint();
+            }
+            GUI.backgroundColor = originalBg;
+        }
+
+        private void DrawSplitOutputSection()
+        {
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                EditorGUILayout.LabelField(
+                    new GUIContent("Output", "Nơi lưu các asset kết quả (prefab + mesh của từng phần)"),
+                    EditorStyles.boldLabel);
+
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    splitSettings.outputFolder = EditorGUILayout.TextField(
+                        new GUIContent("Output Folder", "Thư mục lưu kết quả — bắt buộc nằm trong Assets của project"),
+                        splitSettings.outputFolder);
+                    if (GUILayout.Button(new GUIContent("...", "Chọn thư mục xuất"), GUILayout.Width(28f)))
+                        BrowseSplitOutputFolder();
+                }
+
+                splitSettings.baseName = EditorGUILayout.TextField(
+                    new GUIContent("Base Name", "Tên gốc: {tên}/{tên}.prefab + {tên}_{part}.asset"),
+                    splitSettings.baseName);
+
+                splitSettings.placeResultInScene = EditorGUILayout.Toggle(
+                    new GUIContent("Place Result In Scene",
+                        "Đặt một instance của prefab kết quả vào scene tại đúng vị trí object gốc để so sánh."),
+                    splitSettings.placeResultInScene);
+
+                GUILayout.Space(4f);
+                EditorGUILayout.LabelField(
+                    new GUIContent("Sẽ tạo các file:", "Danh sách asset sẽ được ghi khi tách"),
+                    EditorStyles.miniBoldLabel);
+                EditorGUILayout.LabelField("  " + splitSettings.PrefabPath, EditorStyles.miniLabel);
+                EditorGUILayout.LabelField("  " + splitSettings.PartMeshPath("{part}"), EditorStyles.miniLabel);
+            }
+        }
+
+        private void BrowseSplitOutputFolder()
+        {
+            string chosen = EditorUtility.OpenFolderPanel("Chọn thư mục xuất", splitSettings.outputFolder, "");
+            if (string.IsNullOrEmpty(chosen))
+                return;
+
+            string projectRoot = Application.dataPath.Substring(0, Application.dataPath.Length - "Assets".Length);
+            chosen = chosen.Replace('\\', '/');
+            if (chosen.StartsWith(projectRoot))
+                splitSettings.outputFolder = chosen.Substring(projectRoot.Length);
+            else
+                EditorUtility.DisplayDialog(ToolName, "Thư mục xuất phải nằm trong thư mục Assets của project này.", "OK");
+
+            GUI.FocusControl(null);
+        }
+
+        private void DrawSplitActionBar()
+        {
+            FStylesUtils.DrawInfoBox(
+                "Tách sẽ ghi ra: mesh asset cho từng phần + một prefab có con cho từng phần. " +
+                "Object nguồn không bao giờ bị chỉnh sửa.");
+            GUILayout.Space(4f);
+
+            bool outputInvalid = string.IsNullOrWhiteSpace(splitSettings.baseName) ||
+                                 string.IsNullOrWhiteSpace(splitSettings.outputFolder);
+            int selectedTriangles = splitSelectedTriangleCount;
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                Color originalBg = GUI.backgroundColor;
+
+                using (new EditorGUI.DisabledScope(outputInvalid || selectedTriangles == 0))
+                {
+                    GUI.backgroundColor = new Color(0.4f, 0.6f, 0.9f);
+                    if (GUILayout.Button(
+                            new GUIContent("Tách phần đã chọn",
+                                "Tách mesh thành 2 phần: phần đã chọn và phần còn lại"),
+                            GUILayout.Height(34)))
+                        DoSplitSelected();
+                }
+
+                if (splitSettings.mode == FMeshSplitMode.Simple)
+                {
+                    using (new EditorGUI.DisabledScope(outputInvalid || splitSession.Analysis.Parts.Count < 2))
+                    {
+                        GUI.backgroundColor = new Color(0.55f, 0.75f, 1f);
+                        if (GUILayout.Button(
+                                new GUIContent("Tách tất cả part",
+                                    "Mỗi part được tick \"Xuất\" thành một mesh riêng; các part còn lại gộp vào \"Rest\""),
+                                GUILayout.Height(34), GUILayout.Width(160f)))
+                            DoSplitAllParts();
+                    }
+                }
+
+                GUI.backgroundColor = originalBg;
+
+                using (new EditorGUILayout.VerticalScope(GUILayout.Width(160f)))
+                {
+                    using (new EditorGUI.DisabledScope(splitSession.LastResult == null))
+                    {
+                        if (GUILayout.Button(
+                                new GUIContent("Ping Result Prefab", "Định vị prefab kết quả trong cửa sổ Project"),
+                                GUILayout.Height(26)))
+                        {
+                            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(splitSession.LastResult.PrefabPath);
+                            if (prefab != null)
+                                EditorGUIUtility.PingObject(prefab);
+                        }
+                    }
+                }
+            }
+
+            GUILayout.Space(6f);
+        }
+
+        private void DoSplitSelected()
+        {
+            bool[] mask = splitSession.GetSelectedTriangleMask(splitSettings);
+            if (mask == null)
+                return;
+
+            var selected = new List<int>();
+            var rest = new List<int>();
+            for (int t = 0; t < mask.Length; t++)
+                (mask[t] ? selected : rest).Add(t);
+
+            bool isPlane = splitSettings.mode == FMeshSplitMode.Advanced &&
+                           splitSettings.primitiveKind == FSplitPrimitiveKind.Plane;
+            string selectedName = isPlane ? "SideA" : BuildSelectedPieceName();
+            string restName = isPlane ? "SideB" : "Rest";
+
+            RunSplit(new List<(string, List<int>)>
+            {
+                (selectedName, selected),
+                (restName, rest)
+            });
+        }
+
+        private string BuildSelectedPieceName()
+        {
+            if (splitSettings.mode == FMeshSplitMode.Simple && splitSession.SelectedPartIds.Count == 1)
+            {
+                foreach (FMeshPartInfo part in splitSession.Analysis.Parts)
+                    if (splitSession.SelectedPartIds.Contains(part.PartId))
+                        return part.Name;
+            }
+            return "Selected";
+        }
+
+        private void DoSplitAllParts()
+        {
+            FMeshSplitAnalysis analysis = splitSession.Analysis;
+            var pieces = new List<(string, List<int>)>();
+            var partBuckets = new Dictionary<int, List<int>>();
+            var rest = new List<int>();
+
+            foreach (FMeshPartInfo part in analysis.Parts)
+                if (part.IncludeInSplit)
+                    partBuckets[part.PartId] = new List<int>();
+
+            for (int t = 0; t < analysis.TriangleCount; t++)
+            {
+                if (partBuckets.TryGetValue(analysis.TrianglePartId[t], out List<int> bucket))
+                    bucket.Add(t);
+                else
+                    rest.Add(t);
+            }
+
+            foreach (FMeshPartInfo part in analysis.Parts)
+                if (partBuckets.TryGetValue(part.PartId, out List<int> bucket))
+                    pieces.Add((part.Name, bucket));
+            if (rest.Count > 0)
+                pieces.Add(("Rest", rest));
+
+            RunSplit(pieces);
+        }
+
+        private void RunSplit(List<(string, List<int>)> pieces)
+        {
+            if (AssetDatabase.LoadAssetAtPath<GameObject>(splitSettings.PrefabPath) != null &&
+                !EditorUtility.DisplayDialog(ToolName,
+                    $"\"{splitSettings.PrefabPath}\" đã tồn tại và sẽ bị ghi đè (cùng với các mesh part của nó).\n\nTiếp tục?",
+                    "Ghi đè", "Hủy"))
+                return;
+
+            string error;
+            FMeshSplitResult result = FMeshSplitService.Split(splitSession, splitSettings, pieces, out error);
+            if (result == null)
+            {
+                EditorUtility.DisplayDialog(ToolName, error ?? "Tách mesh thất bại. Xem Console để biết chi tiết.", "OK");
+                return;
+            }
+
+            splitSession.LastResult = result;
+            ShowNotification(new GUIContent("Đã tách mesh xong"));
             Repaint();
         }
     }

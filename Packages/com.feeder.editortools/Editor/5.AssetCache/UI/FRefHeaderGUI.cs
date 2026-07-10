@@ -33,7 +33,7 @@ namespace Feeder
                 ? "Choose targets, scan the database, then run the asset cache view you need."
                 : guide;
 
-            StylesUtils.DrawDescription(resolvedGuide + "\n" + SharedTargetHint);
+            FStylesUtils.DrawDescription(resolvedGuide + "\n" + SharedTargetHint);
             GUILayout.Space(4);
         }
 

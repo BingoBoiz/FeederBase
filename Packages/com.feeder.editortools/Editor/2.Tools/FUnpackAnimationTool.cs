@@ -38,7 +38,7 @@ namespace Feeder
         private void DrawGuide()
         {
             GUILayout.Space(2);
-            StylesUtils.DrawInfoBox(
+            FStylesUtils.DrawInfoBox(
                 "TargetPrefabs            root chứa Animator cần unpack\n" +
                 "Include Child Animators  tìm Animator ở cả object con\n" +
                 "mỗi target → Animations, Controllers (clip + controller dùng chung → _Common)\n" +

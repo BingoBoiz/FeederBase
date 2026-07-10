@@ -602,7 +602,7 @@ namespace Feeder
 
         private IEnumerable<ValueDropdownItem<Type>> GetComponentTypeOptions()
         {
-            return ComponentTypeOptionsProvider.GetComponentTypeOptions();
+            return FComponentTypeOptionsProvider.GetComponentTypeOptions();
         }
     }
 }

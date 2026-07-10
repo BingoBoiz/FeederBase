@@ -20,14 +20,14 @@ namespace Feeder
         [LabelText("Target Path")]
         [ValueDropdown(nameof(GetTargetPathOptions), IsUniqueList = false, DropdownWidth = 400, DropdownHeight = 300, DrawDropdownForListElements = false)]
         [ShowInInspector, OdinSerialize]
-        private string targetPath = HierarchyPathOptionsProvider.RootToken;
+        private string targetPath = FHierarchyPathOptionsProvider.RootToken;
 
-        private readonly HierarchyPathOptionsProvider pathOptionsProvider = new HierarchyPathOptionsProvider();
+        private readonly FHierarchyPathOptionsProvider pathOptionsProvider = new FHierarchyPathOptionsProvider();
 
         [Button(ButtonSizes.Large), GUIColor(0.3f, 0.8f, 1f)]
         public void ScaleModels()
         {
-            int scaledCount = ModelScaleToColliderService.ScaleTargets(basePrefab, targetPath, TargetPrefabs);
+            int scaledCount = FModelScaleToColliderService.ScaleTargets(basePrefab, targetPath, TargetPrefabs);
             Debug.Log($"<color=green>Scaled {scaledCount} model(s).</color>");
         }
 

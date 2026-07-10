@@ -21,7 +21,7 @@ namespace Feeder
         private void DrawGuide()
         {
             GUILayout.Space(2);
-            StylesUtils.DrawInfoBox(
+            FStylesUtils.DrawInfoBox(
                 "TargetMeshes    kéo các Mesh asset cần đóng gói vào đây\n" +
                 "Repack          xuất FBX, cập nhật scene ref, xóa mesh gốc\n" +
                 "lưu ý: thao tác này không thể undo — backup trước khi chạy"
@@ -40,14 +40,14 @@ namespace Feeder
                 var mesh = TargetMeshes[i];
                 if (mesh == null)
                 {
-                    Debug.LogWarning($"[FRepackFBXTool] Skipping null at TargetMeshes[{i}].");
+                    Debug.LogWarning($"[FRepackModelsTool] Skipping null at TargetMeshes[{i}].");
                     continue;
                 }
 
                 string meshAssetPath = AssetDatabase.GetAssetPath(mesh);
                 if (string.IsNullOrEmpty(meshAssetPath))
                 {
-                    Debug.LogWarning($"[FRepackFBXTool] Mesh is not an asset: {mesh.name}. Skipping.");
+                    Debug.LogWarning($"[FRepackModelsTool] Mesh is not an asset: {mesh.name}. Skipping.");
                     continue;
                 }
 
@@ -61,11 +61,11 @@ namespace Feeder
                     string result = ModelExporter.ExportObject(fullPath, tempGo);
                     if (string.IsNullOrEmpty(result))
                     {
-                        Debug.LogWarning($"[FRepackFBXTool] Export failed for mesh: {mesh.name}");
+                        Debug.LogWarning($"[FRepackModelsTool] Export failed for mesh: {mesh.name}");
                         continue;
                     }
                     exported++;
-                    Debug.Log($"[FRepackFBXTool] Exported: {result}");
+                    Debug.Log($"[FRepackModelsTool] Exported: {result}");
                 }
                 finally
                 {
@@ -78,7 +78,7 @@ namespace Feeder
                 Mesh fbxMesh = GetFirstMeshFromModel(fbxAssetPath);
                 if (fbxMesh == null)
                 {
-                    Debug.LogWarning($"[FRepackFBXTool] No mesh in imported FBX: {fbxAssetPath}. Skipping ref replace and delete.");
+                    Debug.LogWarning($"[FRepackModelsTool] No mesh in imported FBX: {fbxAssetPath}. Skipping ref replace and delete.");
                     continue;
                 }
 
