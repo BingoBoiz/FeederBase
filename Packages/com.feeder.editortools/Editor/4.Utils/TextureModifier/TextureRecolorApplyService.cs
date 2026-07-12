@@ -1,5 +1,6 @@
 #if UNITY_EDITOR
 using System;
+using System.Collections.Generic;
 using System.IO;
 using UnityEditor;
 using UnityEngine;
@@ -22,6 +23,16 @@ namespace Feeder
     {
         public static TextureRecolorApplyResult Apply(TextureRecolorSession session, RecolorMaskSettings mask)
         {
+            return Apply(session, session != null ? session.Clusters : null, mask);
+        }
+
+        /// <summary>
+        /// Applies an explicit cluster color mapping to the session's texture. Used by batch apply,
+        /// where the active session's clusters recolor other targets' textures.
+        /// </summary>
+        public static TextureRecolorApplyResult Apply(TextureRecolorSession session,
+            IReadOnlyList<RecolorCluster> clusters, RecolorMaskSettings mask)
+        {
             if (session == null || !session.IsLoaded)
                 throw new InvalidOperationException("No texture is loaded.");
 
@@ -37,7 +48,7 @@ namespace Feeder
                 EditorUtility.DisplayProgressBar("Texture Recolor", $"Recoloring {fileName}...", 0f);
 
                 var pixels = TextureRecolorService.RecolorMulti(
-                    session.FullPixels, session.Clusters, mask, false,
+                    session.FullPixels, clusters, mask, false,
                     p => EditorUtility.DisplayProgressBar("Texture Recolor", $"Recoloring {fileName}...", p * 0.8f));
 
                 EditorUtility.DisplayProgressBar("Texture Recolor", $"Writing {fileName}...", 0.85f);

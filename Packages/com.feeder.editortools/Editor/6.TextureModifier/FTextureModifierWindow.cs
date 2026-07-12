@@ -26,11 +26,16 @@ namespace Feeder
 
         private Tab tab;
 
+        /// <summary>Target list shared by both tabs; its active entry drives the sessions.</summary>
+        [SerializeField] private FRecolorTargetList targetList = new FRecolorTargetList();
+
+        private PropertyTree targetListTree;
+        private Renderer lastActiveRenderer;
+
         // ---- Mesh Palette tab state ----
         private readonly MeshPaletteColorizerSession session = new MeshPaletteColorizerSession();
         private readonly MeshPalettePreviewController preview = new MeshPalettePreviewController();
 
-        private Renderer targetRenderer;
         private int materialSlotIndex;
         private int colorTolerance = 4;
         private PaletteColorBuildResult currentBuildResult;
@@ -44,7 +49,6 @@ namespace Feeder
         private readonly TextureRecolorSession recolorSession = new TextureRecolorSession();
         private readonly TextureRecolorPreviewController recolorPreview = new TextureRecolorPreviewController();
 
-        private Renderer recolorRenderer;
         private int recolorSlotIndex;
         private int recolorMaxClusters = 8;
         private RecolorMaskSettings recolorMask = RecolorMaskSettings.Default;
@@ -79,6 +83,7 @@ namespace Feeder
         {
             base.OnEnable();
             wantsMouseMove = true;
+            lastActiveRenderer = targetList.ActiveRenderer;
             SceneView.duringSceneGui -= OnSceneGUIDraw;
             SceneView.duringSceneGui += OnSceneGUIDraw;
         }
@@ -86,6 +91,11 @@ namespace Feeder
         protected override void OnDisable()
         {
             SceneView.duringSceneGui -= OnSceneGUIDraw;
+            if (targetListTree != null)
+            {
+                targetListTree.Dispose();
+                targetListTree = null;
+            }
             if (!applied)
                 preview.Revert(session.TargetRenderer);
 
@@ -108,6 +118,9 @@ namespace Feeder
                 SwitchTab((Tab)newTab);
 
             windowScroll = EditorGUILayout.BeginScrollView(windowScroll, GUILayout.ExpandHeight(true));
+            GUILayout.Space(4f);
+
+            DrawSharedTargetsSection();
             GUILayout.Space(4f);
 
             if (tab == Tab.MeshPalette)
@@ -160,12 +173,52 @@ namespace Feeder
             Repaint();
         }
 
+        /// <summary>Draws the shared target list Odin-style (like the Feeder menu tools).</summary>
+        private void DrawSharedTargetsSection()
+        {
+            FStylesUtils.DrawDescription(
+                "Danh sách target dùng chung cho cả hai tab. Kéo thả GameObject vào danh sách, " +
+                "chọn \"Target đang chỉnh\" để Load & Analyze / chỉnh màu / preview. " +
+                "Nút \"Apply to All Targets\" áp các chỉnh sửa màu cho toàn bộ danh sách.");
+            GUILayout.Space(4f);
+
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                if (targetListTree == null)
+                    targetListTree = PropertyTree.Create(targetList);
+                targetListTree.Draw(false);
+            }
+
+            // any list edit (dropdown, reorder, remove...) may move the active renderer
+            var activeRenderer = targetList.ActiveRenderer;
+            if (activeRenderer != lastActiveRenderer)
+            {
+                lastActiveRenderer = activeRenderer;
+                OnActiveTargetChanged();
+            }
+        }
+
+        /// <summary>Both tabs follow the shared active target, so a change resets both sessions.</summary>
+        private void OnActiveTargetChanged()
+        {
+            ResetLoadedState();
+            ResetRecolorState();
+
+            var activeRenderer = targetList.ActiveRenderer;
+            if (activeRenderer != null)
+                materialSlotIndex = session.AutoDetectSlot(activeRenderer, materialSlotIndex);
+
+            SceneView.RepaintAll();
+            Repaint();
+        }
+
         // ================================================================ Mesh Palette tab
 
         private void DrawMeshPaletteTab()
         {
             FStylesUtils.DrawDescription(
-                "Recolor meshes that use a palette texture: select a Renderer, load and analyze its palette usage, edit colors, then apply.");
+                "Recolor meshes that use a palette texture: pick the active target, load and analyze its palette usage, " +
+                "edit colors, then apply — to the active target or to every target in the shared list.");
             GUILayout.Space(6f);
 
             DrawTargetSection();
@@ -195,37 +248,19 @@ namespace Feeder
         {
             using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
-                EditorGUILayout.LabelField("Target", EditorStyles.boldLabel);
+                EditorGUILayout.LabelField("Active Target", EditorStyles.boldLabel);
 
-                using (new EditorGUILayout.HorizontalScope())
+                Renderer activeRenderer = targetList.ActiveRenderer;
+                if (activeRenderer == null)
                 {
-                    EditorGUI.BeginChangeCheck();
-                    targetRenderer = (Renderer)EditorGUILayout.ObjectField(
-                        "Target Renderer", targetRenderer, typeof(Renderer), true);
-                    if (EditorGUI.EndChangeCheck())
-                        ResetLoadedState();
-
-                    if (GUILayout.Button("Use Selection", GUILayout.Width(130)))
-                    {
-                        var go = Selection.activeGameObject;
-                        var r = go != null ? go.GetComponent<Renderer>() : null;
-                        if (r == null)
-                        {
-                            EditorUtility.DisplayDialog(ToolName, "The selected GameObject does not have a Renderer.", "OK");
-                        }
-                        else
-                        {
-                            targetRenderer = r;
-                            ResetLoadedState();
-                            materialSlotIndex = session.AutoDetectSlot(targetRenderer, materialSlotIndex);
-                        }
-                    }
+                    FStylesUtils.DrawInfoBox("Add targets to the shared list above and select the active row.");
+                    return;
                 }
 
-                if (targetRenderer == null)
-                    return;
+                using (new EditorGUI.DisabledScope(true))
+                    EditorGUILayout.ObjectField("Renderer", activeRenderer, typeof(Renderer), true);
 
-                var mats = targetRenderer.sharedMaterials;
+                var mats = activeRenderer.sharedMaterials;
                 if (mats != null && mats.Length > 1)
                 {
                     var names = new string[mats.Length];
@@ -423,8 +458,49 @@ namespace Feeder
                     if (GUILayout.Button("Apply (overwrite texture/mesh, reuse material)", GUILayout.Height(34)))
                         Apply();
                     GUI.backgroundColor = originalBg;
+
+                    int batchCount = targetList.ResolveAllRenderers().Count;
+                    if (batchCount > 1 && GUILayout.Button($"Apply to All Targets ({batchCount})", GUILayout.Height(26)))
+                        ApplyPaletteBatch();
                 }
             }
+        }
+
+        private void ApplyPaletteBatch()
+        {
+            if (!session.IsLoaded || !AnyChanged())
+                return;
+
+            var renderers = targetList.ResolveAllRenderers();
+            if (renderers.Count == 0)
+                return;
+
+            if (!EditorUtility.DisplayDialog(ToolName,
+                $"Apply the current color edits to all {renderers.Count} target(s)?\n\n" +
+                "For each target, used palette colors matching the edited colors are remapped, and its " +
+                "palette texture/mesh are rewritten like a single Apply. This cannot be undone.",
+                "Apply to All", "Cancel"))
+                return;
+
+            // capture the edits and settings before the active session is reset
+            var edits = new List<UsedColor>(UsedColors);
+            int tolerance = session.ColorTolerance;
+            var activeRenderer = session.TargetRenderer;
+            int activeSlot = session.MaterialSlotIndex;
+
+            RevertPreview();
+            session.Reset();
+            applied = true; // nothing left to revert on close
+
+            var batch = FRecolorBatchService.MeshPaletteApplyAll(
+                renderers, edits, tolerance, GeneratedFolder, activeRenderer, activeSlot);
+
+            Debug.Log($"<color=green>[{ToolName}]</color> Batch palette apply: {batch.AppliedCount} applied, {batch.SkippedCount} skipped.\n{batch}");
+            ShowNotification(new GUIContent($"Batch: {batch.AppliedCount} applied, {batch.SkippedCount} skipped"));
+
+            // reload the active target so the UI matches the rewritten assets
+            if (targetList.ActiveRenderer != null)
+                LoadAndAnalyze();
         }
 
         private void ResetLoadedState()
@@ -446,7 +522,7 @@ namespace Feeder
             preview.Cleanup();
             currentBuildResult = null;
 
-            if (!session.Load(targetRenderer, materialSlotIndex, colorTolerance, out string error))
+            if (!session.Load(targetList.ActiveRenderer, materialSlotIndex, colorTolerance, out string error))
             {
                 EditorUtility.DisplayDialog(ToolName, error, "OK");
                 return;
@@ -535,7 +611,8 @@ namespace Feeder
         {
             FStylesUtils.DrawDescription(
                 "Recolor a texture directly: detect its dominant colors, pick replacements, and rewrite the pixels " +
-                "while preserving shading. The mesh and its UVs are not modified.");
+                "while preserving shading. The mesh and its UVs are not modified. The mapping can be applied to " +
+                "the active target or to every target in the shared list.");
             GUILayout.Space(6f);
 
             DrawRecolorTargetSection();
@@ -565,36 +642,19 @@ namespace Feeder
         {
             using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
-                EditorGUILayout.LabelField("Target", EditorStyles.boldLabel);
+                EditorGUILayout.LabelField("Active Target", EditorStyles.boldLabel);
 
-                using (new EditorGUILayout.HorizontalScope())
+                Renderer activeRenderer = targetList.ActiveRenderer;
+                if (activeRenderer == null)
                 {
-                    EditorGUI.BeginChangeCheck();
-                    recolorRenderer = (Renderer)EditorGUILayout.ObjectField(
-                        "Target Renderer", recolorRenderer, typeof(Renderer), true);
-                    if (EditorGUI.EndChangeCheck())
-                        ResetRecolorState();
-
-                    if (GUILayout.Button("Use Selection", GUILayout.Width(130)))
-                    {
-                        var go = Selection.activeGameObject;
-                        var r = go != null ? go.GetComponent<Renderer>() : null;
-                        if (r == null)
-                        {
-                            EditorUtility.DisplayDialog(ToolName, "The selected GameObject does not have a Renderer.", "OK");
-                        }
-                        else
-                        {
-                            recolorRenderer = r;
-                            ResetRecolorState();
-                        }
-                    }
+                    FStylesUtils.DrawInfoBox("Add targets to the shared list above and select the active row.");
+                    return;
                 }
 
-                if (recolorRenderer == null)
-                    return;
+                using (new EditorGUI.DisabledScope(true))
+                    EditorGUILayout.ObjectField("Renderer", activeRenderer, typeof(Renderer), true);
 
-                var mats = recolorRenderer.sharedMaterials;
+                var mats = activeRenderer.sharedMaterials;
                 if (mats != null && mats.Length > 1)
                 {
                     var names = new string[mats.Length];
@@ -826,7 +886,57 @@ namespace Feeder
                     if (GUILayout.Button("Apply (overwrite texture in place)", GUILayout.Height(34)))
                         ApplyRecolor();
                     GUI.backgroundColor = originalBg;
+
+                    int batchCount = targetList.ResolveAllRenderers().Count;
+                    if (batchCount > 1 && GUILayout.Button($"Apply to All Targets ({batchCount})", GUILayout.Height(26)))
+                        ApplyRecolorBatch();
                 }
+            }
+        }
+
+        private void ApplyRecolorBatch()
+        {
+            if (!recolorSession.IsLoaded || !recolorSession.AnyChanged)
+                return;
+
+            var renderers = targetList.ResolveAllRenderers();
+            if (renderers.Count == 0)
+                return;
+
+            if (!EditorUtility.DisplayDialog(ToolName,
+                $"Recolor the main texture of all {renderers.Count} target(s) with the current color mapping?\n\n" +
+                "PNG textures are overwritten in place (cannot be undone); other formats are exported as a " +
+                "\"_recolored.png\" next to the original. Targets sharing one texture file are processed once.",
+                "Apply to All", "Cancel"))
+                return;
+
+            // capture the mapping before the active session is reloaded
+            var clusters = new List<RecolorCluster>(recolorSession.Clusters);
+            var activeRenderer = recolorSession.TargetRenderer;
+            int activeSlot = recolorSession.MaterialSlotIndex;
+
+            try
+            {
+                recolorPreview.RevertScenePreview(recolorSession.TargetRenderer);
+
+                var batch = FRecolorBatchService.TextureRecolorApplyAll(
+                    renderers, clusters, recolorMask, recolorMaxClusters, activeRenderer, activeSlot);
+
+                recolorApplied = true;
+                recolorPreviewDirty = true;
+
+                Debug.Log($"<color=green>[{ToolName}]</color> Batch texture recolor: {batch.AppliedCount} applied, {batch.SkippedCount} skipped.\n{batch}");
+                ShowNotification(new GUIContent($"Batch: {batch.AppliedCount} applied, {batch.SkippedCount} skipped"));
+
+                // reload so the cached pixels/clusters match the rewritten texture
+                if (targetList.ActiveRenderer != null)
+                    recolorSession.Load(targetList.ActiveRenderer, recolorSlotIndex, recolorMaxClusters, out _);
+            }
+            catch (System.Exception ex)
+            {
+                recolorPreview.RevertScenePreview(recolorSession.TargetRenderer);
+                Debug.LogError($"[{ToolName}] Batch recolor failed: {ex}");
+                EditorUtility.DisplayDialog(ToolName, "Batch apply failed:\n" + ex.Message, "OK");
             }
         }
 
@@ -846,7 +956,7 @@ namespace Feeder
             recolorPreview.RevertScenePreview(recolorSession.TargetRenderer);
             recolorPreview.Cleanup();
 
-            if (!recolorSession.Load(recolorRenderer, recolorSlotIndex, recolorMaxClusters, out string error))
+            if (!recolorSession.Load(targetList.ActiveRenderer, recolorSlotIndex, recolorMaxClusters, out string error))
             {
                 EditorUtility.DisplayDialog(ToolName, error, "OK");
                 return;
@@ -893,7 +1003,7 @@ namespace Feeder
 
                 // reload so the cached pixels/clusters match the rewritten texture,
                 // otherwise a second Apply would recolor on top of the first one
-                recolorSession.Load(recolorRenderer, recolorSlotIndex, recolorMaxClusters, out _);
+                recolorSession.Load(targetList.ActiveRenderer, recolorSlotIndex, recolorMaxClusters, out _);
             }
             catch (System.Exception ex)
             {
