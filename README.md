@@ -26,6 +26,7 @@ https://github.com/BingoBoiz/FeederBase.git?path=/Packages/com.feeder.editortool
 - **Tools:** See [Tools](#tools) below.
 - **Utils:** Hierarchy/path resolution, prefab helpers, naming/sequence utilities.
 - **MazeGenerator:** Procedural maze algorithms (e.g. Aldous-Broder, cellular automaton).
+- **Google Sheet Importer:** Read Google Sheets through a service account, preview tabs, and generate C# data classes and ScriptableObject assets.
 
 Tools are exposed via Feeder menu and/or toolbar where applicable.
 
@@ -53,6 +54,20 @@ Tools are exposed via Feeder menu and/or toolbar where applicable.
 | **FNameOffsetTool** | Adjust name/label position (e.g. UI or 3D text) by a Y offset on a chosen holder path across targets. |
 | **FPrefabModifyTool** | Batch-modify prefabs (structure depends on tool implementation). |
 | **FPrefabReferenceSyncTool** | Sync or fix prefab references (used in prefab workflows). |
+| **FeederGooglesheetImporterWindow** | Feeder-branded copy of the Google Sheet importer. Open via `Tools > Feeder > Googlesheet Importer`. |
+
+## Google Sheet Importer
+
+The importer keeps the original import and generation behavior while using Feeder naming throughout.
+
+1. Enable Google Sheets API in Google Cloud, create a service account, and download its JSON key.
+2. Share the spreadsheet with the JSON key's `client_email`.
+3. Open **Tools > Feeder > Googlesheet Importer**, configure the credential path under **Data Config**, and add a sheet entry.
+4. Paste the Spreadsheet ID, load the sheet, select a tab, then generate the script and data asset.
+
+The first row contains the generated type name and the second row contains typed fields such as `n_ID`, `f_Damage`, `s_Name`, or `pref_Enemy:EnemyController`. Prefix a field header with `/` to exclude that column.
+
+Credential JSON files are project-local secrets. No credential, Spreadsheet ID, config asset, or cached sheet data is included in this package.
 
 ---
 
