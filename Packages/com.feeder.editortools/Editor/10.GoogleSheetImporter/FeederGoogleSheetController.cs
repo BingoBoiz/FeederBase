@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using Google.Apis.Auth.OAuth2;
 using Google.Apis.Services;
 using Google.Apis.Sheets.v4;
@@ -17,14 +16,10 @@ namespace Feeder
         private readonly string spreadsheetId;
         private readonly SheetsService sheetService;
 
-        public FeederGoogleSheetController(string sheetSpreadsheetId, string credentialFilePath)
+        public FeederGoogleSheetController(string sheetSpreadsheetId, string credentialJson)
         {
             spreadsheetId = sheetSpreadsheetId;
-            GoogleCredential credential;
-            using (FileStream stream = new FileStream(credentialFilePath, FileMode.Open, FileAccess.Read))
-            {
-                credential = GoogleCredential.FromStream(stream).CreateScoped(Scopes);
-            }
+            GoogleCredential credential = GoogleCredential.FromJson(credentialJson).CreateScoped(Scopes);
 
             sheetService = new SheetsService(new BaseClientService.Initializer
             {

@@ -346,11 +346,12 @@ namespace Feeder
          InfoBox("$infoBoxMessage", InfoMessageType.Warning, "@!string.IsNullOrEmpty(infoBoxMessage)")]
         public void LoadSheet()
         {
-            string configuredCredentialPath = FeederSpreadSheetLoaderConfig.Instance.credentialFilePath;
-            string credentialFilePath = Path.GetFullPath(configuredCredentialPath);
-            if (credentialFilePath.IsNullOrWhitespace())
+            string credentialJson = FeederSpreadSheetLoaderConfig.Instance.GetCredentialJson();
+            if (credentialJson.IsNullOrWhitespace())
             {
-                EditorUtility.DisplayDialog("Load Sheet Data", "credential file path is invalid !! check the data config", "close");
+                EditorUtility.DisplayDialog("Load Sheet Data",
+                    "Không tìm thấy credential. Dự án cần cài package NabaGame Googlesheet Importer " +
+                    "(com.nabagame.googlesheet.importer), hoặc điền credentialFilePath trỏ tới key riêng.", "close");
                 return;
             }
 
@@ -358,7 +359,7 @@ namespace Feeder
             {
                 if (googleSheetController == null)
                 {
-                    googleSheetController = new FeederGoogleSheetController(SpreadsheetID, credentialFilePath);
+                    googleSheetController = new FeederGoogleSheetController(SpreadsheetID, credentialJson);
                 }
             }
             catch (Exception e)

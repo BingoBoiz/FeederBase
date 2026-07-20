@@ -17,7 +17,7 @@ namespace Feeder
     {
         public const string DefaultAssetFolder = "_Feeder/Editor/GooglesheetImporter";
         public const string DefaultSheetFolder = "_Feeder/Editor/GooglesheetImporter/SheetInfos";
-        public const string DefaultCredentialRelativePath = "Assets/_Feeder/Editor/GooglesheetImporter/bb-googlesheet-data-collector.json";
+        public const string NabaCredentialAssetPath = "Packages/com.nabagame.googlesheet.importer/Editor/bb-googlesheet-data-collector.json";
 
         [FoldoutGroup("Sheet List", true, 0), PropertyOrder(1), InlineEditor, OnCollectionChanged("Before", "After")]
         public List<FeederSheetInfo> sheetList;
@@ -25,8 +25,27 @@ namespace Feeder
         [HideInInspector] public int sheetIndex;
         public FeederUpdateSheetListAction sheetUpdateCallback;
 
-        [FoldoutGroup("Settings", true, 1)]
-        public string credentialFilePath = DefaultCredentialRelativePath;
+        [FoldoutGroup("Settings", true, 1), Tooltip("Để trống = dùng credential từ package NabaGame Googlesheet Importer. Điền đường dẫn để override bằng key riêng của dự án.")]
+        public string credentialFilePath;
+
+        /// <summary>
+        /// Trả về nội dung JSON credential. Ưu tiên file override trỏ bởi credentialFilePath (nếu tồn tại),
+        /// ngược lại đọc credential từ package NabaGame (com.nabagame.googlesheet.importer).
+        /// </summary>
+        public string GetCredentialJson()
+        {
+            if (!credentialFilePath.IsNullOrWhitespace())
+            {
+                string fullPath = Path.GetFullPath(credentialFilePath);
+                if (File.Exists(fullPath))
+                {
+                    return File.ReadAllText(fullPath);
+                }
+            }
+
+            TextAsset packaged = AssetDatabase.LoadAssetAtPath<TextAsset>(NabaCredentialAssetPath);
+            return packaged != null ? packaged.text : null;
+        }
 
         public static FeederSpreadSheetLoaderConfig Instance
         {
@@ -52,11 +71,6 @@ namespace Feeder
             if (value.sheetList == null)
             {
                 value.sheetList = new List<FeederSheetInfo>();
-            }
-
-            if (value.credentialFilePath.IsNullOrWhitespace())
-            {
-                value.credentialFilePath = DefaultCredentialRelativePath;
             }
 
             return value;
