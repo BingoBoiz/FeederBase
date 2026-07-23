@@ -8,6 +8,9 @@ namespace Feeder
 {
     public sealed class FAssetCollectorTool : FTargetAssetsToolBase
     {
+        private const string AllTypesLabel = "All (Tất cả)";
+        private const string SpriteFilter = "t:Sprite";
+
         private static readonly (string Label, string Filter)[] AssetTypeMap =
         {
             ("Animation Clip",      "t:AnimationClip"),
@@ -21,6 +24,7 @@ namespace Feeder
             ("Scene",               "t:Scene"),
             ("Script",              "t:MonoScript"),
             ("Shader",              "t:Shader"),
+            ("Sprite",              SpriteFilter),
             ("Texture",             "t:Texture"),
             ("Video Clip",          "t:VideoClip"),
             ("Visual Effect Asset", "t:VisualEffectAsset"),
@@ -80,6 +84,10 @@ namespace Feeder
                 if (AssetDatabase.FindAssets(filter, new[] { folder }).Length > 0)
                     _availableTypes.Add(label);
             }
+
+            // "All" chỉ có nghĩa khi folder chứa ít nhất 1 loại asset.
+            if (_availableTypes.Count > 0)
+                _availableTypes.Insert(0, AllTypesLabel);
         }
 
         [PropertyOrder(0)]
@@ -93,14 +101,25 @@ namespace Feeder
                 return;
             }
 
-            var filter = GetFilter(_selectedType);
-            if (filter == null) return;
-
             var folder = FDataPersistenceService.GetOrCreateDataContainer().AssetCollectorFolder;
-            var guids = AssetDatabase.FindAssets(filter, new[] { folder });
-            var assets = guids
-                .Select(g => AssetDatabase.LoadAssetAtPath<Object>(AssetDatabase.GUIDToAssetPath(g)))
+
+            // "All" gộp mọi loại asset trong map; các loại khác chỉ nạp loại được chọn.
+            // Distinct dedupe ref vì một số filter có thể trả cùng object.
+            IEnumerable<Object> loaded;
+            if (_selectedType == AllTypesLabel)
+            {
+                loaded = AssetTypeMap.SelectMany(t => LoadAssetsForFilter(t.Filter, folder));
+            }
+            else
+            {
+                var filter = GetFilter(_selectedType);
+                if (filter == null) return;
+                loaded = LoadAssetsForFilter(filter, folder);
+            }
+
+            var assets = loaded
                 .Where(a => a != null)
+                .Distinct()
                 .ToList();
 
             var data = FDataPersistenceService.GetOrCreateDataContainer();
@@ -110,6 +129,19 @@ namespace Feeder
             FDataPersistenceService.SaveData(data);
 
             Debug.Log($"<color=cyan>[Asset Collector] Đã nạp {assets.Count} '{_selectedType}' → TargetAssets ({data.TargetPrefabs.Count} prefabs → TargetPrefabs)</color>");
+        }
+
+        // Sprite là sub-asset của texture nên phải LoadAllAssetsAtPath rồi lọc Sprite,
+        // các loại khác nạp main asset như thường.
+        private static IEnumerable<Object> LoadAssetsForFilter(string filter, string folder)
+        {
+            var paths = AssetDatabase.FindAssets(filter, new[] { folder })
+                .Select(AssetDatabase.GUIDToAssetPath);
+
+            if (filter == SpriteFilter)
+                return paths.SelectMany(p => AssetDatabase.LoadAllAssetsAtPath(p).OfType<Sprite>()).Cast<Object>();
+
+            return paths.Select(AssetDatabase.LoadAssetAtPath<Object>);
         }
 
         private IEnumerable<string> GetAvailableTypesDropdown() => _availableTypes;
