@@ -482,9 +482,9 @@ namespace Feeder
                 bool changed = false;
                 for (int i = 0; i < spritesheet.Length; i++)
                 {
-                    if (!spritesheet[i].name.StartsWith(entry.OldName)) continue;
+                    if (!spritesheet[i].name.Contains(entry.OldName)) continue;
                     var data = spritesheet[i];
-                    data.name = entry.NewName + data.name.Substring(entry.OldName.Length);
+                    data.name = data.name.Replace(entry.OldName, entry.NewName);
                     spritesheet[i] = data;
                     changed = true;
                 }

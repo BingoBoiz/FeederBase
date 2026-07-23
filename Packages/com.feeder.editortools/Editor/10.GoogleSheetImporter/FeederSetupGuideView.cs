@@ -69,6 +69,15 @@ namespace Feeder
                 wordWrap = false,
             };
 
+            GUILayout.Label("0. Không cần credential / API key", title);
+            GUILayout.Label(
+                "Tool đọc sheet trực tiếp qua endpoint export công khai của Google — " +
+                "<b>không cần</b> package NabaGame, API key hay đăng nhập.\n\n" +
+                "Điều kiện duy nhất: sheet phải được <b>chia sẻ công khai qua link</b> (xem mục 1).",
+                body);
+
+            GUILayout.Space(8);
+
             GUILayout.Label("1. Cấp quyền truy cập sheet", title);
             GUILayout.Label(
                 "Tool chỉ đọc được sheet khi Google Sheets được chia sẻ công khai qua link.\n\n" +

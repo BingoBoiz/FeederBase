@@ -342,25 +342,74 @@ namespace Feeder
             FeederDataAssetGenerator.GenerateClass(selectTab, cells, rawFields, AssetFolder, SpriteAssetFolder, PrefabFolder);
         }
 
+        // Tải lại workbook rồi regenerate asset cho MỌI tab đã có sẵn file asset (cập nhật hàng loạt).
+        [ButtonGroup("Sheet Info/Script", 1), Button("Generate All Assets", ButtonSizes.Large), GUIColor(0.98f, 0.80f, 0.55f)]
+        public void GenerateAllAssets()
+        {
+            if (AssetFolder.IsNullOrWhitespace())
+            {
+                infoBoxMessage = "Asset Folder path is Null";
+                return;
+            }
+
+            FeederGoogleSheetController controller;
+            try
+            {
+                controller = new FeederGoogleSheetController(SpreadsheetID);
+            }
+            catch (Exception e)
+            {
+                EditorUtility.DisplayDialog("Generate All Assets", $"{e.Message}", "close");
+                return;
+            }
+
+            List<string> names = controller.GetAllSheetName();
+            Dictionary<string, IList<IList<Object>>> allData = controller.GetAllSheetValueRange(names);
+            info.strikethroughRows = controller.GetStrikethroughRowsPerSheet(names);
+            EditorUtility.SetDirty(info);
+
+            string assetFolderPath = BuildAssetFolderPath(AssetFolder);
+            int updated = 0;
+            int skipped = 0;
+            try
+            {
+                foreach (string name in names)
+                {
+                    string assetPath = $"{assetFolderPath}/Raw{name.Replace(" ", string.Empty)}.asset";
+                    if (AssetDatabase.LoadAssetAtPath<ScriptableObject>(assetPath) == null)
+                    {
+                        skipped++;
+                        continue; // Chỉ cập nhật tab đã có asset sẵn.
+                    }
+
+                    if (!allData.TryGetValue(name, out IList<IList<Object>> data) ||
+                        !BuildCells(name, data, out string[,] tabCells, out List<string> tabRawFields) ||
+                        tabCells == null || tabCells.GetLength(0) == 0 || tabCells[0, 0].IsNullOrWhitespace())
+                    {
+                        skipped++;
+                        continue;
+                    }
+
+                    FeederDataAssetGenerator.GenerateClass(name, tabCells, tabRawFields, AssetFolder, SpriteAssetFolder, PrefabFolder);
+                    updated++;
+                }
+            }
+            finally
+            {
+                EditorUtility.ClearProgressBar();
+            }
+
+            infoBoxMessage = $"Generate All Assets: cập nhật {updated}, bỏ qua {skipped} tab (chưa có asset).";
+            Debug.Log($"[Feeder] {infoBoxMessage}");
+        }
+
         [FoldoutGroup("Sheet Info", true, 0), Button(ButtonSizes.Large), GUIColor(0.91f, 0.98f, 0.50f), EnableIf("@SpreadsheetID != string.Empty"),
          InfoBox("$infoBoxMessage", InfoMessageType.Warning, "@!string.IsNullOrEmpty(infoBoxMessage)")]
         public void LoadSheet()
         {
-            string credentialJson = FeederSpreadSheetLoaderConfig.Instance.GetCredentialJson();
-            if (credentialJson.IsNullOrWhitespace())
-            {
-                EditorUtility.DisplayDialog("Load Sheet Data",
-                    "Không tìm thấy credential. Dự án cần cài package NabaGame Googlesheet Importer " +
-                    "(com.nabagame.googlesheet.importer), hoặc điền credentialFilePath trỏ tới key riêng.", "close");
-                return;
-            }
-
             try
             {
-                if (googleSheetController == null)
-                {
-                    googleSheetController = new FeederGoogleSheetController(SpreadsheetID, credentialJson);
-                }
+                googleSheetController = new FeederGoogleSheetController(SpreadsheetID);
             }
             catch (Exception e)
             {
@@ -370,6 +419,17 @@ namespace Feeder
 
             sheetNames = googleSheetController.GetAllSheetName();
             sheetData = googleSheetController.GetAllSheetValueRange(sheetNames);
+            try
+            {
+                info.strikethroughRows = googleSheetController.GetStrikethroughRowsPerSheet(sheetNames);
+                EditorUtility.SetDirty(info);
+            }
+            catch (Exception ex)
+            {
+                info.strikethroughRows = null;
+                Debug.LogWarning($"Không đọc được strikethrough, sẽ không bỏ qua hàng nào: {ex.Message}");
+            }
+
             if (!selectTab.IsNullOrWhitespace() && sheetNames.Contains(selectTab))
             {
                 OnSheetSelected();
@@ -384,61 +444,68 @@ namespace Feeder
             AssetDatabase.SaveAssets();
         }
 
+        // Chỉ tải + parse tab đang chọn (nhanh hơn Load Sheet vì không parse toàn workbook).
+        [FoldoutGroup("Sheet Info", true, 0), Button("Load This Sheet (Selected Tab)", ButtonSizes.Large),
+         GUIColor(0.60f, 0.90f, 0.98f), EnableIf("@SpreadsheetID != string.Empty")]
+        public void LoadThisSheet()
+        {
+            try
+            {
+                googleSheetController = FeederGoogleSheetController.CreateForSingleSheet(SpreadsheetID);
+            }
+            catch (Exception e)
+            {
+                EditorUtility.DisplayDialog("Load Sheet Data", $"{e.Message}", "close");
+                return;
+            }
+
+            sheetNames = googleSheetController.GetAllSheetName();
+
+            if (selectTab.IsNullOrWhitespace() || !sheetNames.Contains(selectTab))
+            {
+                infoBoxMessage = "Chọn 'selectTab' trong mục Sheet Data rồi bấm lại 'Load This Sheet'.";
+                return;
+            }
+
+            infoBoxMessage = string.Empty;
+            List<string> only = new List<string> { selectTab };
+            googleSheetController.EnsureSheet(selectTab);
+            sheetData = googleSheetController.GetAllSheetValueRange(only);
+            try
+            {
+                info.strikethroughRows = googleSheetController.GetStrikethroughRowsPerSheet(only);
+                EditorUtility.SetDirty(info);
+            }
+            catch (Exception ex)
+            {
+                info.strikethroughRows = null;
+                Debug.LogWarning($"Không đọc được strikethrough: {ex.Message}");
+            }
+
+            OnSheetSelected();
+            AssetDatabase.SaveAssets();
+        }
+
         private void OnSheetSelected()
         {
             _tablePage = 0;
             _showFullTable = false;
+
+            // Khi đổi tab qua dropdown mà tab chưa được tải: nếu controller còn sống thì parse thêm tab đó.
+            if (!selectTab.IsNullOrWhitespace() && googleSheetController != null &&
+                (sheetData == null || !sheetData.ContainsKey(selectTab)))
+            {
+                EnsureTabLoaded(selectTab);
+            }
+
             if (sheetData != null && sheetData.Count > 0 &&
                 sheetData.TryGetValue(selectTab, out IList<IList<Object>> data))
             {
                 infoBoxMessage = string.Empty;
                 info.selectTab = selectTab;
-                if (!data.IsNullOrEmpty() && data.Count >= 2)
+                if (BuildCells(selectTab, data, out string[,] newCells, out List<string> newRawFields))
                 {
-                    int rowCount = data.Count;
-                    int sourceColumnCount = data[1].Count;
-                    string sheetTypeName = GetSheetTypeNameFromHeaderRow(data);
-
-                    List<int> validColumnIndices = new List<int>(sourceColumnCount);
-                    for (int columnIndex = 0; columnIndex < sourceColumnCount; columnIndex++)
-                    {
-                        if (ShouldSkipColumnByFieldRowPrefix(data, columnIndex))
-                        {
-                            continue;
-                        }
-
-                        validColumnIndices.Add(columnIndex);
-                    }
-
-                    int validColumnCount = validColumnIndices.Count;
-                    rawFields = new List<string>(validColumnCount);
-                    string[,] newCells = new string[validColumnCount, rowCount];
-                    for (int i = 0; i < rowCount; i++)
-                    {
-                        if (!data[i].IsNullOrEmpty())
-                        {
-                            for (int validColumnIndex = 0; validColumnIndex < validColumnCount; validColumnIndex++)
-                            {
-                                int sourceColumnIndex = validColumnIndices[validColumnIndex];
-                                if (sourceColumnIndex < data[i].Count)
-                                {
-                                    string value = data[i][sourceColumnIndex].ToString();
-                                    if (i == 1)
-                                    {
-                                        rawFields.Add(value);
-                                    }
-
-                                    newCells[validColumnIndex, i] = value;
-                                }
-                            }
-                        }
-                    }
-
-                    if (!sheetTypeName.IsNullOrWhitespace() && validColumnCount > 0)
-                    {
-                        newCells[0, 0] = sheetTypeName;
-                    }
-
+                    rawFields = newRawFields;
                     cells = newCells;
                 }
 
@@ -447,8 +514,111 @@ namespace Feeder
             }
             else
             {
-                Debug.LogError($"data {sheetName} is null or does not contain sheet {selectTab}");
+                infoBoxMessage = $"Tab '{selectTab}' chưa được tải. Bấm 'Load This Sheet' hoặc 'Load Sheet'.";
             }
+        }
+
+        // Tải bổ sung 1 tab vào sheetData/strikethroughRows từ controller đang sống (chế độ lazy).
+        private void EnsureTabLoaded(string tab)
+        {
+            List<string> only = new List<string> { tab };
+            googleSheetController.EnsureSheet(tab);
+
+            Dictionary<string, IList<IList<Object>>> mergedData = sheetData != null
+                ? new Dictionary<string, IList<IList<Object>>>(sheetData)
+                : new Dictionary<string, IList<IList<Object>>>();
+            foreach (KeyValuePair<string, IList<IList<Object>>> kv in googleSheetController.GetAllSheetValueRange(only))
+            {
+                mergedData[kv.Key] = kv.Value;
+            }
+
+            sheetData = mergedData;
+
+            Dictionary<string, List<int>> mergedStruck = info.strikethroughRows != null
+                ? new Dictionary<string, List<int>>(info.strikethroughRows)
+                : new Dictionary<string, List<int>>();
+            foreach (KeyValuePair<string, List<int>> kv in googleSheetController.GetStrikethroughRowsPerSheet(only))
+            {
+                mergedStruck[kv.Key] = kv.Value;
+            }
+
+            info.strikethroughRows = mergedStruck;
+            EditorUtility.SetDirty(info);
+        }
+
+        // Dựng bảng cells + rawFields cho 1 tab: bỏ cột prefix '/', bỏ hàng bị gạch, gán type name vào [0,0].
+        private bool BuildCells(string tab, IList<IList<Object>> data, out string[,] resultCells, out List<string> resultRawFields)
+        {
+            resultCells = null;
+            resultRawFields = new List<string>();
+            if (data.IsNullOrEmpty() || data.Count < 2)
+            {
+                return false;
+            }
+
+            int rowCount = data.Count;
+            int sourceColumnCount = data[1].Count;
+            string sheetTypeName = GetSheetTypeNameFromHeaderRow(data);
+
+            List<int> validColumnIndices = new List<int>(sourceColumnCount);
+            for (int columnIndex = 0; columnIndex < sourceColumnCount; columnIndex++)
+            {
+                if (ShouldSkipColumnByFieldRowPrefix(data, columnIndex))
+                {
+                    continue;
+                }
+
+                validColumnIndices.Add(columnIndex);
+            }
+
+            int validColumnCount = validColumnIndices.Count;
+            resultRawFields = new List<string>(validColumnCount);
+
+            HashSet<int> struckRowSet = GetStruckRowSet(tab);
+            List<int> validRowIndices = new List<int>(rowCount);
+            for (int i = 0; i < rowCount; i++)
+            {
+                // Row 0 (type) và row 1 (field) luôn giữ; row dữ liệu bị gạch cả hàng thì bỏ.
+                if (i >= 2 && struckRowSet.Contains(i))
+                {
+                    continue;
+                }
+
+                validRowIndices.Add(i);
+            }
+
+            string[,] newCells = new string[validColumnCount, validRowIndices.Count];
+            for (int outRow = 0; outRow < validRowIndices.Count; outRow++)
+            {
+                int sourceRow = validRowIndices[outRow];
+                if (data[sourceRow].IsNullOrEmpty())
+                {
+                    continue;
+                }
+
+                for (int validColumnIndex = 0; validColumnIndex < validColumnCount; validColumnIndex++)
+                {
+                    int sourceColumnIndex = validColumnIndices[validColumnIndex];
+                    if (sourceColumnIndex < data[sourceRow].Count)
+                    {
+                        string value = data[sourceRow][sourceColumnIndex].ToString();
+                        if (sourceRow == 1)
+                        {
+                            resultRawFields.Add(value);
+                        }
+
+                        newCells[validColumnIndex, outRow] = value;
+                    }
+                }
+            }
+
+            if (!sheetTypeName.IsNullOrWhitespace() && validColumnCount > 0)
+            {
+                newCells[0, 0] = sheetTypeName;
+            }
+
+            resultCells = newCells;
+            return true;
         }
 
         private void RefreshGeneratedOutputReferences()
@@ -512,6 +682,17 @@ namespace Feeder
             }
 
             return $"Assets/{normalizedFolder}";
+        }
+
+        private HashSet<int> GetStruckRowSet(string tab)
+        {
+            if (info?.strikethroughRows != null &&
+                info.strikethroughRows.TryGetValue(tab, out List<int> rows) && rows != null)
+            {
+                return new HashSet<int>(rows);
+            }
+
+            return new HashSet<int>();
         }
 
         private bool ShouldSkipColumnByFieldRowPrefix(IList<IList<Object>> data, int columnIndex)

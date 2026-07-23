@@ -39,6 +39,9 @@ namespace Feeder
         public Dictionary<string, IList<IList<object>>> sheetData;
 
         [HideInInspector]
+        public Dictionary<string, List<int>> strikethroughRows;
+
+        [HideInInspector]
         public List<string> sheetNames;
 
         [HideInInspector]
