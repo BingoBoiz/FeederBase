@@ -1,6 +1,7 @@
 using Sirenix.OdinInspector;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 
@@ -24,6 +25,14 @@ namespace Feeder
         private class SceneObjectRenameEntry
         {
             public GameObject GameObject;
+            public string OldName;
+            public string NewName;
+        }
+
+        /// <summary>A sprite sub-asset inside a Multiple/Polygon-mode texture (renamed via the sprite data provider).</summary>
+        private class SpriteRenameEntry
+        {
+            public string TexturePath;
             public string OldName;
             public string NewName;
         }
@@ -74,12 +83,14 @@ namespace Feeder
 
             var assetEntries = new Dictionary<string, AssetRenameEntry>(TargetAssets.Count);
             var sceneEntries = new Dictionary<int, SceneObjectRenameEntry>(TargetAssets.Count);
-            BuildRenamePlan(TargetAssets, inputPattern, outputPattern, assetEntries, sceneEntries);
+            var spriteEntries = new Dictionary<string, SpriteRenameEntry>(TargetAssets.Count);
+            BuildRenamePlan(TargetAssets, inputPattern, outputPattern, assetEntries, sceneEntries, spriteEntries);
 
-            if (assetEntries.Count == 0 && sceneEntries.Count == 0)
+            if (assetEntries.Count == 0 && sceneEntries.Count == 0 && spriteEntries.Count == 0)
                 return;
 
             ApplyAssetRenames(assetEntries);
+            ApplySpriteRenames(spriteEntries);
             ApplySceneObjectRenames(sceneEntries);
             RefreshInputPattern();
         }
@@ -105,14 +116,78 @@ namespace Feeder
 
             var assetEntries = new Dictionary<string, AssetRenameEntry>(TargetAssets.Count);
             var sceneEntries = new Dictionary<int, SceneObjectRenameEntry>(TargetAssets.Count);
-            BuildFindReplacePlan(TargetAssets, findString, replaceString ?? "", assetEntries, sceneEntries);
+            var spriteEntries = new Dictionary<string, SpriteRenameEntry>(TargetAssets.Count);
+            BuildFindReplacePlan(TargetAssets, findString, replaceString ?? "", assetEntries, sceneEntries, spriteEntries);
 
-            if (assetEntries.Count == 0 && sceneEntries.Count == 0)
+            if (assetEntries.Count == 0 && sceneEntries.Count == 0 && spriteEntries.Count == 0)
                 return;
 
             ApplyAssetRenames(assetEntries);
+            ApplySpriteRenames(spriteEntries);
             ApplySceneObjectRenames(sceneEntries);
             RefreshInputPattern();
+        }
+
+        [PropertySpace(SpaceBefore = 10)]
+        [TabGroup("RenameMode", "Sprite → Texture Name")]
+        [OnInspectorGUI]
+        private void DrawSpriteSyncGuide()
+        {
+            GUILayout.Space(2);
+            FStylesUtils.DrawInfoBox(
+                "Đổi tên sprite bên trong texture Multiple-mode cho khớp tên file.\n" +
+                "Kéo folder hoặc texture vào TargetAssets. Chỉ xử lý texture có đúng 1 sprite.\n" +
+                "fileID của sprite được giữ nguyên nên mọi reference trong prefab/SO không bị đứt."
+            );
+            GUILayout.Space(4);
+        }
+
+        [TabGroup("RenameMode", "Sprite → Texture Name")]
+        [Button("Sync Sprite Name To Texture Name", ButtonSizes.Large)]
+        private void SyncSpriteNamesToTextureNames()
+        {
+            if ((TargetAssets?.Count ?? 0) == 0)
+                throw new System.InvalidOperationException("TargetAssets is empty.");
+
+            var texturePaths = CollectMultipleModeTexturePaths(TargetAssets);
+            if (texturePaths.Count == 0)
+            {
+                Debug.LogWarning("[FRenameTool] No Multiple-mode textures found in TargetAssets.");
+                return;
+            }
+
+            int renamed = FSpriteRenameUtils.SyncSpriteNamesToFileName(texturePaths);
+            AssetDatabase.Refresh();
+            Debug.Log($"[FRenameTool] Synced {renamed} sprite name(s) to texture name across {texturePaths.Count} texture(s).");
+        }
+
+        /// <summary>Expands TargetAssets (folders, textures, sprites) into distinct Multiple-mode texture paths.</summary>
+        private static List<string> CollectMultipleModeTexturePaths(List<Object> assets)
+        {
+            var result = new List<string>();
+            var seen = new HashSet<string>();
+            for (int i = 0; i < assets.Count; i++)
+            {
+                var asset = assets[i];
+                if (asset == null) continue;
+                var path = AssetDatabase.GetAssetPath(asset);
+                if (string.IsNullOrEmpty(path)) continue;
+
+                if (AssetDatabase.IsValidFolder(path))
+                {
+                    foreach (var guid in AssetDatabase.FindAssets("t:Texture2D", new[] { path }))
+                    {
+                        var texPath = AssetDatabase.GUIDToAssetPath(guid);
+                        if (seen.Add(texPath) && FSpriteRenameUtils.IsMultipleModeTexture(texPath))
+                            result.Add(texPath);
+                    }
+                }
+                else if (seen.Add(path) && FSpriteRenameUtils.IsMultipleModeTexture(path))
+                {
+                    result.Add(path);
+                }
+            }
+            return result;
         }
 
         protected override void OnTargetAssetsChanged()
@@ -133,6 +208,37 @@ namespace Feeder
             return obj is GameObject go && !EditorUtility.IsPersistent(go);
         }
 
+        /// <summary>
+        /// True when <paramref name="obj"/> is a Sprite sub-asset of a Multiple/Polygon-mode texture.
+        /// Single-mode sprites are excluded on purpose: their name mirrors the file name, so those
+        /// rename through the normal texture-file path instead.
+        /// </summary>
+        private static bool TryGetSpriteTarget(Object obj, out string texturePath, out string spriteName)
+        {
+            texturePath = null;
+            spriteName = null;
+            if (!(obj is Sprite sprite)) return false;
+
+            var path = AssetDatabase.GetAssetPath(sprite);
+            if (string.IsNullOrEmpty(path)) return false;
+            if (!FSpriteRenameUtils.IsMultipleModeTexture(path)) return false;
+
+            texturePath = path;
+            spriteName = sprite.name;
+            return true;
+        }
+
+        private static void AddSpriteEntry(
+            Dictionary<string, SpriteRenameEntry> spriteEntries,
+            string texturePath, string oldName, string newName)
+        {
+            var key = texturePath + "|" + oldName;
+            if (!spriteEntries.TryGetValue(key, out var entry))
+                spriteEntries.Add(key, new SpriteRenameEntry { TexturePath = texturePath, OldName = oldName, NewName = newName });
+            else if (entry.NewName != newName)
+                throw new System.InvalidOperationException($"conflicting rename for sprite '{oldName}' in {texturePath}.");
+        }
+
         private static string BuildPatternFromAssets(List<Object> assets)
         {
             if (assets == null || assets.Count == 0)
@@ -148,6 +254,10 @@ namespace Feeder
                 if (IsSceneObject(asset))
                 {
                     name = asset.name;
+                }
+                else if (TryGetSpriteTarget(asset, out _, out var spriteName))
+                {
+                    name = spriteName;
                 }
                 else
                 {
@@ -310,7 +420,8 @@ namespace Feeder
             string input,
             string output,
             Dictionary<string, AssetRenameEntry> assetEntries,
-            Dictionary<int, SceneObjectRenameEntry> sceneEntries)
+            Dictionary<int, SceneObjectRenameEntry> sceneEntries,
+            Dictionary<string, SpriteRenameEntry> spriteEntries)
         {
             bool useEnumSlotIndex = EnumPatternResolver.PatternUsesEnum(output);
             int enumSlotIndex = 0;
@@ -319,6 +430,19 @@ namespace Feeder
                 var asset = assets[i];
                 if (asset == null)
                 {
+                    if (useEnumSlotIndex) enumSlotIndex++;
+                    continue;
+                }
+
+                if (TryGetSpriteTarget(asset, out var spriteTexPath, out var oldSpriteName))
+                {
+                    int idx = useEnumSlotIndex ? enumSlotIndex : i;
+                    var resolvedSpriteOutput = EnumPatternResolver.Resolve(output, idx);
+                    var newSpriteName = FModifyStringUtils.ApplyPattern(oldSpriteName, input, resolvedSpriteOutput, idx);
+                    if (string.IsNullOrEmpty(newSpriteName))
+                        throw new System.InvalidOperationException($"rename result is empty at index {i}.");
+                    if (newSpriteName != oldSpriteName)
+                        AddSpriteEntry(spriteEntries, spriteTexPath, oldSpriteName, newSpriteName);
                     if (useEnumSlotIndex) enumSlotIndex++;
                     continue;
                 }
@@ -385,7 +509,8 @@ namespace Feeder
             string find,
             string replace,
             Dictionary<string, AssetRenameEntry> assetEntries,
-            Dictionary<int, SceneObjectRenameEntry> sceneEntries)
+            Dictionary<int, SceneObjectRenameEntry> sceneEntries,
+            Dictionary<string, SpriteRenameEntry> spriteEntries)
         {
             for (int i = 0; i < assets.Count; i++)
             {
@@ -393,6 +518,14 @@ namespace Feeder
                 if (asset == null)
                 {
                     Debug.LogWarning($"[FRenameTool] Skipping null at TargetAssets[{i}].");
+                    continue;
+                }
+
+                if (TryGetSpriteTarget(asset, out var spriteTexPath, out var oldSpriteName))
+                {
+                    var newSpriteName = oldSpriteName.Replace(find, replace);
+                    if (newSpriteName != oldSpriteName)
+                        AddSpriteEntry(spriteEntries, spriteTexPath, oldSpriteName, newSpriteName);
                     continue;
                 }
 
@@ -476,28 +609,42 @@ namespace Feeder
             var importer = AssetImporter.GetAtPath(newPath) as TextureImporter;
             if (importer == null) return;
 
-            if (importer.spriteImportMode == SpriteImportMode.Multiple)
+            if (importer.spriteImportMode == SpriteImportMode.Multiple ||
+                importer.spriteImportMode == SpriteImportMode.Polygon)
             {
-                var spritesheet = importer.spritesheet;
-                bool changed = false;
-                for (int i = 0; i < spritesheet.Length; i++)
-                {
-                    if (!spritesheet[i].name.Contains(entry.OldName)) continue;
-                    var data = spritesheet[i];
-                    data.name = data.name.Replace(entry.OldName, entry.NewName);
-                    spritesheet[i] = data;
-                    changed = true;
-                }
-                if (changed)
-                {
-                    importer.spritesheet = spritesheet;
-                    importer.SaveAndReimport();
-                }
+                // Rename via the sprite data provider so name↔fileId stays consistent (keeps references intact).
+                var renames = AssetDatabase.LoadAllAssetsAtPath(newPath)
+                    .OfType<Sprite>()
+                    .Where(s => s.name.Contains(entry.OldName))
+                    .Select(s => (s.name, s.name.Replace(entry.OldName, entry.NewName)))
+                    .ToList();
+                if (renames.Count > 0)
+                    FSpriteRenameUtils.RenameSprites(newPath, renames, saveAndReimport: true);
             }
             else if (importer.spriteImportMode == SpriteImportMode.Single)
             {
                 // Force reimport so Unity re-derives the sprite sub-asset name from the new file name.
                 importer.SaveAndReimport();
+            }
+        }
+
+        private static void ApplySpriteRenames(Dictionary<string, SpriteRenameEntry> spriteEntries)
+        {
+            if (spriteEntries.Count == 0)
+                return;
+
+            AssetDatabase.StartAssetEditing();
+            try
+            {
+                foreach (var group in spriteEntries.Values.GroupBy(e => e.TexturePath))
+                {
+                    var renames = group.Select(e => (e.OldName, e.NewName)).ToList();
+                    FSpriteRenameUtils.RenameSprites(group.Key, renames, saveAndReimport: true);
+                }
+            }
+            finally
+            {
+                AssetDatabase.StopAssetEditing();
             }
         }
 
