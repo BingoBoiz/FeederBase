@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using Sirenix.OdinInspector;
-using Sirenix.Serialization;
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
@@ -12,8 +11,13 @@ namespace Feeder
 {
     public sealed class FFbxUnpackMode : FRefModeBase
     {
-        [HideInInspector, OdinSerialize] private List<Object> sourceFbxList = new List<Object>();
-        [HideInInspector, OdinSerialize] private string saveFolderPath = "Assets";
+        private List<Object> sourceFbxList => FDataPersistenceService.GetOrCreateDataContainer().FbxUnpackSources;
+
+        private string saveFolderPath
+        {
+            get => FToolPrefs.GetString(nameof(FFbxUnpackMode), nameof(saveFolderPath), "Assets");
+            set => FToolPrefs.SetString(nameof(FFbxUnpackMode), nameof(saveFolderPath), value);
+        }
 
         [NonSerialized] private List<FFbxUnpackPlan> plans = new List<FFbxUnpackPlan>();
         [NonSerialized] private FFbxUnpackBatchResult lastBatchResult;
@@ -484,7 +488,12 @@ namespace Feeder
 
         // --------------------------------------------------------------- scan
 
-        private void MarkDirtyScan() => needsScan = true;
+        private void MarkDirtyScan()
+        {
+            needsScan = true;
+            // sourceFbxList mutate trực tiếp trên list của container (Add/Remove/indexer) → flush ra disk ở đây.
+            FDataPersistenceService.SaveData(FDataPersistenceService.GetOrCreateDataContainer());
+        }
 
         private void EnsureScanned()
         {

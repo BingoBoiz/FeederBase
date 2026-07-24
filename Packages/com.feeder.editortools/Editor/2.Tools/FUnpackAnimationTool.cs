@@ -100,7 +100,17 @@ namespace Feeder
             AssignToAnimators(entries, controllerMap);
             AssetDatabase.SaveAssets();
 
+            UnityEngine.Object firstCreated = FirstNonNull(controllerMap.Values) ?? FirstNonNull(clipMap.Values);
+            FSelectionUtils.Ping(firstCreated);
             Debug.Log($"<color=green>[FUnpackAnimationTool] Done. {entries.Count} animator(s), {clipMap.Count} clip(s), {controllerMap.Count} controller(s) unpacked.</color>");
+        }
+
+        private static UnityEngine.Object FirstNonNull<T>(IEnumerable<T> items) where T : UnityEngine.Object
+        {
+            foreach (T item in items)
+                if (item != null)
+                    return item;
+            return null;
         }
 
         // ══════════════════════════════════════════════════════════════════

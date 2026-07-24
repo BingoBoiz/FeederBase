@@ -21,6 +21,8 @@ namespace Feeder
         private List<List<Material>> _duplicateGroups = new List<List<Material>>();
         private Dictionary<int, ReorderableList> _reorderableListsByGroupIndex = new Dictionary<int, ReorderableList>();
 
+        [NonSerialized] private FAssetRevertService.RevertOperation _lastResolveOp;
+
         protected override string GetDescription()
         {
             return "Quét TargetPrefabs tìm material trùng lặp (cùng base map texture) rồi gộp lại. Mỗi nhóm bên dưới là một tập material trùng nhau.";
@@ -28,12 +30,20 @@ namespace Feeder
 
         [Title("Settings")]
         [LabelText("Skip TextMeshPro")]
-        [ShowInInspector, OdinSerialize]
-        private bool skipTextMeshPro = true;
+        [ShowInInspector]
+        private bool skipTextMeshPro
+        {
+            get => FToolPrefs.GetBool(nameof(FDeduplicateMaterialTool), nameof(skipTextMeshPro), true);
+            set => FToolPrefs.SetBool(nameof(FDeduplicateMaterialTool), nameof(skipTextMeshPro), value);
+        }
 
         [LabelText("Skip Disabled GameObjects")]
-        [ShowInInspector, OdinSerialize]
-        private bool skipDisabledGameObjects = true;
+        [ShowInInspector]
+        private bool skipDisabledGameObjects
+        {
+            get => FToolPrefs.GetBool(nameof(FDeduplicateMaterialTool), nameof(skipDisabledGameObjects), true);
+            set => FToolPrefs.SetBool(nameof(FDeduplicateMaterialTool), nameof(skipDisabledGameObjects), value);
+        }
 
         [OnInspectorGUI]
         private void DrawGuide()
@@ -194,7 +204,8 @@ namespace Feeder
                 float resolveWidth = 70f;
                 Rect titleRect = new Rect(headerRect.x, headerRect.y, headerRect.width - resolveWidth - 4f, headerRect.height);
                 Rect resolveRect = new Rect(headerRect.xMax - resolveWidth, headerRect.y, resolveWidth, headerRect.height);
-                GUI.Label(titleRect, $"Group {groupIndex + 1} ({group.Count} materials)", EditorStyles.boldLabel);
+                string keeperName = group[0] != null ? group[0].name : "?";
+                GUI.Label(titleRect, $"Group {groupIndex + 1} ({group.Count} materials) — keeps '{keeperName}'", EditorStyles.boldLabel);
 
                 EditorGUI.BeginDisabledGroup(group.Count < 2);
                 if (GUI.Button(resolveRect, "Resolve"))
@@ -213,9 +224,25 @@ namespace Feeder
                         {
                             Material mat = group[index];
                             float pingWidth = 40f;
-                            Rect matRect = new Rect(rect.x, rect.y, rect.width - pingWidth - 4f, rect.height);
+                            float keepWidth = 44f;
+                            Rect matRect = new Rect(rect.x, rect.y, rect.width - pingWidth - keepWidth - 8f, rect.height);
+                            Rect keepRect = new Rect(matRect.xMax + 4f, rect.y, keepWidth, rect.height);
                             Rect pingRect = new Rect(rect.xMax - pingWidth, rect.y, pingWidth, rect.height);
                             EditorGUI.ObjectField(matRect, mat, typeof(Material), false);
+                            EditorGUI.BeginDisabledGroup(index == 0);
+                            if (GUI.Button(keepRect, "Keep"))
+                            {
+                                // ReorderableList must not be mutated mid-draw.
+                                EditorApplication.delayCall += () =>
+                                {
+                                    if (index <= 0 || index >= group.Count) return;
+                                    Material keeper = group[index];
+                                    group.RemoveAt(index);
+                                    group.Insert(0, keeper);
+                                    EditorUtility.SetDirty(this);
+                                };
+                            }
+                            EditorGUI.EndDisabledGroup();
                             if (GUI.Button(pingRect, "Ping"))
                                 PingFirstGameObjectWithMaterial(mat);
                         }
@@ -236,13 +263,17 @@ namespace Feeder
             if (group == null || group.Count < 2)
                 return;
 
+            var op = FAssetRevertService.Begin("Deduplicate Material Resolve",
+                "Renderer material-slot rewires nằm trong Undo (Ctrl+Z); nút này chỉ restore file material đã xoá.");
+
             Material materialToKeep = group[0];
             for (int i = 1; i < group.Count; i++)
             {
                 Material materialToRemove = group[i];
                 ReplaceMaterialInTargetHierarchy(materialToRemove, materialToKeep);
-                DeleteMaterialAssetIfProjectAsset(materialToRemove);
+                MoveMaterialAssetToTrash(op, materialToRemove);
             }
+            _lastResolveOp = op.IsEmpty ? null : op;
 
             _duplicateGroups.RemoveAt(groupIndex);
             _reorderableListsByGroupIndex.Clear();
@@ -251,73 +282,35 @@ namespace Feeder
             AssetDatabase.Refresh();
         }
 
+        private bool HasRevertableResolve => _lastResolveOp != null && !_lastResolveOp.IsEmpty;
+
+        [PropertyOrder(101)]
+        [Button("Revert Last Resolve", ButtonSizes.Medium), EnableIf(nameof(HasRevertableResolve))]
+        private void RevertLastResolve()
+        {
+            if (FAssetRevertService.Revert(_lastResolveOp, out string report))
+                _lastResolveOp = null;
+            Debug.Log(report);
+            FindDuplicateMaterials();
+        }
+
+        private static void MoveMaterialAssetToTrash(FAssetRevertService.RevertOperation op, Material material)
+        {
+            if (material == null)
+                return;
+            string path = AssetDatabase.GetAssetPath(material);
+            if (string.IsNullOrEmpty(path) || !path.StartsWith("Assets/"))
+                return;
+            FAssetRevertService.MoveToTrash(op, path);
+        }
+
         private void PingFirstGameObjectWithMaterial(Material material)
         {
-            if (material == null || TargetPrefabs == null)
+            if (material == null)
                 return;
-            GameObject first = FindFirstGameObjectWithMaterial(material);
+            GameObject first = FRendererSearchUtils.FindFirstGameObjectWithMaterial(TargetPrefabs, material);
             if (first != null)
-            {
-                Selection.activeGameObject = first;
-                EditorGUIUtility.PingObject(first);
-                FocusSceneViewOn(first);
-            }
-        }
-
-        private static void FocusSceneViewOn(GameObject go)
-        {
-            if (go == null)
-                return;
-            SceneView sceneView = SceneView.lastActiveSceneView;
-            if (sceneView != null)
-            {
-                sceneView.Focus();
-                sceneView.FrameSelected();
-            }
-        }
-
-        private GameObject FindFirstGameObjectWithMaterial(Material material)
-        {
-            if (TargetPrefabs == null || material == null)
-                return null;
-            for (int i = 0; i < TargetPrefabs.Count; i++)
-            {
-                GameObject root = TargetPrefabs[i];
-                if (root == null)
-                    continue;
-                GameObject found = FindFirstGameObjectWithMaterialInHierarchy(root.transform, material);
-                if (found != null)
-                    return found;
-            }
-            return null;
-        }
-
-        private static GameObject FindFirstGameObjectWithMaterialInHierarchy(Transform root, Material material)
-        {
-            MeshRenderer[] meshRenderers = root.GetComponentsInChildren<MeshRenderer>(true);
-            foreach (MeshRenderer mr in meshRenderers)
-            {
-                if (RendererUsesMaterial(mr, material))
-                    return mr.gameObject;
-            }
-            SkinnedMeshRenderer[] skinnedRenderers = root.GetComponentsInChildren<SkinnedMeshRenderer>(true);
-            foreach (SkinnedMeshRenderer sr in skinnedRenderers)
-            {
-                if (RendererUsesMaterial(sr, material))
-                    return sr.gameObject;
-            }
-            return null;
-        }
-
-        private static bool RendererUsesMaterial(Renderer renderer, Material material)
-        {
-            Material[] shared = renderer.sharedMaterials;
-            for (int i = 0; i < shared.Length; i++)
-            {
-                if (shared[i] == material)
-                    return true;
-            }
-            return false;
+                FRendererSearchUtils.SelectPingAndFocus(first);
         }
 
         private void ReplaceMaterialInTargetHierarchy(Material oldMaterial, Material newMaterial)
@@ -361,16 +354,6 @@ namespace Feeder
                 renderer.sharedMaterials = shared;
                 EditorUtility.SetDirty(renderer);
             }
-        }
-
-        private static void DeleteMaterialAssetIfProjectAsset(Material material)
-        {
-            if (material == null)
-                return;
-            string path = AssetDatabase.GetAssetPath(material);
-            if (string.IsNullOrEmpty(path) || !path.StartsWith("Assets/"))
-                return;
-            AssetDatabase.DeleteAsset(path);
         }
 
         private static bool HasTextMeshProComponent(GameObject go)

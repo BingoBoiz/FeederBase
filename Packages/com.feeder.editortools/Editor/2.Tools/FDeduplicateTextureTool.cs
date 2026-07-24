@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Security.Cryptography;
 using Sirenix.OdinInspector;
-using Sirenix.Serialization;
 using TMPro;
 using UnityEditor;
 using UnityEditorInternal;
@@ -22,6 +21,8 @@ namespace Feeder
         private List<SimilarGroup> _similarGroups;
         private Dictionary<int, ReorderableList> _reorderableListsByGroupIndex = new Dictionary<int, ReorderableList>();
 
+        [NonSerialized] private FAssetRevertService.RevertOperation _lastResolveOp;
+
         protected override string GetDescription()
         {
             return "Quét TargetPrefabs tìm texture giống nhau (cùng độ phân giải + pixel) rồi gộp lại. Chỉ quét Base Map (_BaseMap / _MainTex) của từng material.";
@@ -29,12 +30,20 @@ namespace Feeder
 
         [Title("Settings")]
         [LabelText("Skip TextMeshPro")]
-        [ShowInInspector, OdinSerialize]
-        private bool skipTextMeshPro = true;
+        [ShowInInspector]
+        private bool skipTextMeshPro
+        {
+            get => FToolPrefs.GetBool(nameof(FDeduplicateTextureTool), nameof(skipTextMeshPro), true);
+            set => FToolPrefs.SetBool(nameof(FDeduplicateTextureTool), nameof(skipTextMeshPro), value);
+        }
 
         [LabelText("Skip Disabled GameObjects")]
-        [ShowInInspector, OdinSerialize]
-        private bool skipDisabledGameObjects = true;
+        [ShowInInspector]
+        private bool skipDisabledGameObjects
+        {
+            get => FToolPrefs.GetBool(nameof(FDeduplicateTextureTool), nameof(skipDisabledGameObjects), true);
+            set => FToolPrefs.SetBool(nameof(FDeduplicateTextureTool), nameof(skipDisabledGameObjects), value);
+        }
 
         [OnInspectorGUI]
         private void DrawGuide()
@@ -271,7 +280,8 @@ namespace Feeder
                 Rect titleRect = new Rect(headerRect.x, headerRect.y, headerRect.width - resolveWidth - 4f, headerRect.height);
                 Rect resolveRect = new Rect(headerRect.xMax - resolveWidth, headerRect.y, resolveWidth, headerRect.height);
 
-                GUI.Label(titleRect, $"Group {groupIndex + 1} ({group.Rows.Count} textures)", EditorStyles.boldLabel);
+                string keeperName = group.Rows[0]?.Texture != null ? group.Rows[0].Texture.name : "?";
+                GUI.Label(titleRect, $"Group {groupIndex + 1} ({group.Rows.Count} textures) — keeps '{keeperName}'", EditorStyles.boldLabel);
 
                 EditorGUI.BeginDisabledGroup(group.Rows.Count < 2);
                 if (GUI.Button(resolveRect, "Resolve"))
@@ -302,9 +312,28 @@ namespace Feeder
                         {
                             GroupRow row = group.Rows[index];
                             float colTex = TexturePreviewSize + 8f;
+                            float buttonWidth = 44f;
                             Rect texRect = new Rect(rect.x + 4f, rect.y + 4f, TexturePreviewSize, TexturePreviewSize);
                             Rect objFieldRect = new Rect(texRect.x, texRect.yMax + 2f, texRect.width, EditorGUIUtility.singleLineHeight);
-                            Rect matRect = new Rect(rect.x + colTex, rect.y + 4f, rect.width - colTex - 4f, rect.height - 8f);
+                            Rect matRect = new Rect(rect.x + colTex, rect.y + 4f, rect.width - colTex - 2f * buttonWidth - 12f, rect.height - 8f);
+                            Rect keepRect = new Rect(rect.xMax - 2f * buttonWidth - 8f, rect.y + 4f, buttonWidth, EditorGUIUtility.singleLineHeight);
+                            Rect pingRect = new Rect(rect.xMax - buttonWidth - 4f, rect.y + 4f, buttonWidth, EditorGUIUtility.singleLineHeight);
+
+                            EditorGUI.BeginDisabledGroup(index == 0);
+                            if (GUI.Button(keepRect, "Keep"))
+                            {
+                                // ReorderableList must not be mutated mid-draw.
+                                EditorApplication.delayCall += () =>
+                                {
+                                    if (index <= 0 || index >= group.Rows.Count) return;
+                                    GroupRow keeper = group.Rows[index];
+                                    group.Rows.RemoveAt(index);
+                                    group.Rows.Insert(0, keeper);
+                                };
+                            }
+                            EditorGUI.EndDisabledGroup();
+                            if (GUI.Button(pingRect, "Ping"))
+                                PingRow(row);
 
                             if (row.Texture != null)
                             {
@@ -329,6 +358,40 @@ namespace Feeder
 
                 reorderableList.DoList(EditorGUILayout.GetControlRect(false, reorderableList.GetHeight()));
             }
+        }
+
+        /// <summary>Focuses the first scene object using this texture's material, else pings the texture asset.</summary>
+        private void PingRow(GroupRow row)
+        {
+            Material firstMat = null;
+            if (row?.Slots != null)
+            {
+                foreach (MaterialTextureSlot slot in row.Slots)
+                {
+                    if (slot.Material != null)
+                    {
+                        firstMat = slot.Material;
+                        break;
+                    }
+                }
+            }
+            GameObject go = FRendererSearchUtils.FindFirstGameObjectWithMaterial(TargetPrefabs, firstMat);
+            if (go != null)
+                FRendererSearchUtils.SelectPingAndFocus(go);
+            else
+                FSelectionUtils.Ping(row?.Texture);
+        }
+
+        private bool HasRevertableResolve => _lastResolveOp != null && !_lastResolveOp.IsEmpty;
+
+        [PropertyOrder(101)]
+        [Button("Revert Last Resolve", ButtonSizes.Medium), EnableIf(nameof(HasRevertableResolve))]
+        private void RevertLastResolve()
+        {
+            if (FAssetRevertService.Revert(_lastResolveOp, out string report))
+                _lastResolveOp = null;
+            Debug.Log(report);
+            FindSimilarTexture();
         }
 
         private void ResolveGroup(int groupIndex)
@@ -374,8 +437,11 @@ namespace Feeder
                 }
             }
 
+            var op = FAssetRevertService.Begin("Deduplicate Texture Resolve",
+                "Material texture-slot rewires nằm trong Undo (Ctrl+Z); nút này chỉ restore file texture đã xoá.");
             foreach (string path in pathsToDelete)
-                AssetDatabase.DeleteAsset(path);
+                FAssetRevertService.MoveToTrash(op, path);
+            _lastResolveOp = op.IsEmpty ? null : op;
 
             _similarGroups.RemoveAt(groupIndex);
             _reorderableListsByGroupIndex.Remove(groupIndex);

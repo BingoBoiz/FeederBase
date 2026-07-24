@@ -33,14 +33,21 @@ namespace Feeder
         [LabelText("Enum Type")]
         [ValueDropdown(nameof(GetEnumTypeDropdown))]
         [ShowInInspector]
-        [SerializeField]
-        private string _selectedEnumTypeName;
+        private string _selectedEnumTypeName
+        {
+            get => FToolPrefs.GetString(nameof(FSortOrderTool), nameof(_selectedEnumTypeName), null);
+            set => FToolPrefs.SetString(nameof(FSortOrderTool), nameof(_selectedEnumTypeName), value);
+        }
 
         [PropertySpace(SpaceBefore = 6)]
         [LabelText("Match Threshold (0–1)")]
-        [Range(0f, 1f)]
-        [SerializeField]
-        private float _matchThreshold = 0.9f;
+        [PropertyRange(0f, 1f)]
+        [ShowInInspector]
+        private float _matchThreshold
+        {
+            get => FToolPrefs.GetFloat(nameof(FSortOrderTool), nameof(_matchThreshold), 0.9f);
+            set => FToolPrefs.SetFloat(nameof(FSortOrderTool), nameof(_matchThreshold), value);
+        }
 
         [PropertyOrder(40)]
         [OnInspectorGUI]

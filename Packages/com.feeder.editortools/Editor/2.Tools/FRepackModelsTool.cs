@@ -14,7 +14,7 @@ namespace Feeder
     {
         protected override string GetDescription()
         {
-            return "Export từng Mesh thành file FBX cùng thư mục, thay thế tham chiếu trong scene rồi xóa mesh gốc. Thao tác không thể undo.";
+            return "Export từng Mesh thành file FBX cùng thư mục, thay thế tham chiếu trong scene rồi chuyển mesh gốc vào Assets/_FeederTrash (revert được).";
         }
 
         [OnInspectorGUI]
@@ -23,17 +23,21 @@ namespace Feeder
             GUILayout.Space(2);
             FStylesUtils.DrawInfoBox(
                 "TargetMeshes    kéo các Mesh asset cần đóng gói vào đây\n" +
-                "Repack          xuất FBX, cập nhật scene ref, xóa mesh gốc\n" +
-                "lưu ý: thao tác này không thể undo — backup trước khi chạy"
+                "Repack          xuất FBX, cập nhật scene ref, chuyển mesh gốc vào trash\n" +
+                "Revert          khôi phục mesh gốc từ Assets/_FeederTrash (FBX giữ nguyên)"
             );
             GUILayout.Space(4);
         }
+
+        [NonSerialized] private FAssetRevertService.RevertOperation _lastOp;
 
         [Button(ButtonSizes.Large), GUIColor(0.3f, 0.8f, 1f)]
         public void Repack()
         {
             ValidateInput();
 
+            var op = FAssetRevertService.Begin("Repack Models",
+                "Scene mesh-reference rewires nằm trong Undo (Ctrl+Z); FBX đã export KHÔNG bị xoá khi revert.");
             int exported = 0;
             for (int i = 0; i < TargetMeshes.Count; i++)
             {
@@ -83,10 +87,21 @@ namespace Feeder
                 }
 
                 ReplaceSceneReferencesFromMeshToMesh(mesh, fbxMesh);
-                DeleteMeshAssetIfStandalone(mesh, meshAssetPath);
+                MoveMeshAssetToTrashIfStandalone(op, meshAssetPath);
             }
+            _lastOp = op.IsEmpty ? null : op;
 
             Debug.Log($"<color=green>Repack done. Exported {exported} FBX file(s).</color>");
+        }
+
+        private bool HasRevertableOp => _lastOp != null && !_lastOp.IsEmpty;
+
+        [Button("Revert Last Repack (restore source meshes)", ButtonSizes.Medium), EnableIf(nameof(HasRevertableOp))]
+        private void RevertLastRepack()
+        {
+            if (FAssetRevertService.Revert(_lastOp, out string report))
+                _lastOp = null;
+            Debug.Log(report);
         }
 
         private static string GetFbxAssetPathForMesh(Mesh mesh, string meshAssetPath)
@@ -209,11 +224,11 @@ namespace Feeder
             renderer.sharedMaterials = newMats;
         }
 
-        private static void DeleteMeshAssetIfStandalone(Mesh mesh, string meshAssetPath)
+        private static void MoveMeshAssetToTrashIfStandalone(FAssetRevertService.RevertOperation op, string meshAssetPath)
         {
             if (!meshAssetPath.EndsWith(".asset", StringComparison.OrdinalIgnoreCase))
                 return;
-            AssetDatabase.DeleteAsset(meshAssetPath);
+            FAssetRevertService.MoveToTrash(op, meshAssetPath);
         }
 
         private static string SanitizeFileName(string name)

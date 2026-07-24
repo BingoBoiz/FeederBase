@@ -37,7 +37,13 @@ namespace Feeder
         private readonly FMeshSplitSession splitSession = new FMeshSplitSession();
         private readonly FMeshSplitSettings splitSettings = new FMeshSplitSettings();
 
-        private Tab tab;
+        private const string PrefsOwner = nameof(FMeshModifierWindow);
+
+        private Tab tab
+        {
+            get => FToolPrefs.GetEnum(PrefsOwner, nameof(tab), Tab.Merge);
+            set => FToolPrefs.SetEnum(PrefsOwner, nameof(tab), value);
+        }
         private int splitSelectedTriangleCount;
         private Vector2 windowScroll;
         private Vector2 tableScroll;
@@ -46,8 +52,16 @@ namespace Feeder
         private bool guideFoldout;
         private bool splitGuideFoldout;
         private bool advancedFoldout;
-        private string customPropsText = string.Empty;
-        private string ignorePropsText = string.Empty;
+        private string customPropsText
+        {
+            get => FToolPrefs.GetString(PrefsOwner, nameof(customPropsText), string.Empty);
+            set => FToolPrefs.SetString(PrefsOwner, nameof(customPropsText), value);
+        }
+        private string ignorePropsText
+        {
+            get => FToolPrefs.GetString(PrefsOwner, nameof(ignorePropsText), string.Empty);
+            set => FToolPrefs.SetString(PrefsOwner, nameof(ignorePropsText), value);
+        }
 
         [MenuItem("Tools/Feeder/Feeder Mesh Modifier", priority = MenuPriority)]
         private static void OpenWindow()
@@ -309,6 +323,24 @@ namespace Feeder
                 if (first != null)
                     settings.baseName = first.name + "_Combined";
             }
+
+            if (string.IsNullOrWhiteSpace(settings.outputFolder))
+                settings.outputFolder = ResolveDefaultOutputFolder(session.Targets) ?? settings.outputFolder;
+        }
+
+        /// <summary>Folder of the first target's asset (via prefab source for scene instances), or null.</summary>
+        private static string ResolveDefaultOutputFolder(IEnumerable<UnityEngine.Object> targets)
+        {
+            var first = targets.FirstOrDefault(t => t != null);
+            if (first == null) return null;
+            string p = AssetDatabase.GetAssetPath(first);
+            if (string.IsNullOrEmpty(p))
+            {
+                var src = PrefabUtility.GetCorrespondingObjectFromOriginalSource(first);
+                if (src != null) p = AssetDatabase.GetAssetPath(src);
+            }
+            if (string.IsNullOrEmpty(p)) return null;
+            return System.IO.Path.GetDirectoryName(p)?.Replace('\\', '/');
         }
 
         // ================================================================ Summary
@@ -859,6 +891,10 @@ namespace Feeder
 
             if (string.IsNullOrWhiteSpace(splitSettings.baseName) || splitSettings.baseName == "SplitMesh")
                 splitSettings.baseName = splitSession.Target.name + "_Split";
+
+            if (string.IsNullOrWhiteSpace(splitSettings.outputFolder) && splitSession.Target != null)
+                splitSettings.outputFolder =
+                    ResolveDefaultOutputFolder(new[] { splitSession.Target }) ?? splitSettings.outputFolder;
 
             FMeshSplitterSceneOverlay.NotifyAnalysisChanged();
             Repaint();

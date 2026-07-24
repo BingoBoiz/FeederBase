@@ -37,6 +37,34 @@ namespace Feeder
             public string NewName;
         }
 
+        [System.Serializable]
+        private sealed class PreviewRow
+        {
+            [TableColumnWidth(160)] public string OldName;
+            [TableColumnWidth(160)] public string NewName;
+            public string Status;
+        }
+
+        /// <summary>Result of a dry-run: the rename entries plus a per-target preview row list.</summary>
+        private sealed class RenamePlan
+        {
+            public readonly Dictionary<string, AssetRenameEntry> AssetEntries = new Dictionary<string, AssetRenameEntry>();
+            public readonly Dictionary<int, SceneObjectRenameEntry> SceneEntries = new Dictionary<int, SceneObjectRenameEntry>();
+            public readonly Dictionary<string, SpriteRenameEntry> SpriteEntries = new Dictionary<string, SpriteRenameEntry>();
+            public readonly List<PreviewRow> Rows = new List<PreviewRow>();
+            public int ErrorCount;
+            public int ChangeCount => AssetEntries.Count + SceneEntries.Count + SpriteEntries.Count;
+
+            public void AddRow(string oldName, string newName)
+                => Rows.Add(new PreviewRow { OldName = oldName, NewName = newName, Status = newName == oldName ? "unchanged" : "OK" });
+
+            public void AddErrorRow(string oldName, string message)
+            {
+                Rows.Add(new PreviewRow { OldName = oldName, Status = message });
+                ErrorCount++;
+            }
+        }
+
         [PropertySpace(SpaceBefore = 10)]
         [TabGroup("RenameMode", "Change Pattern")]
         [LabelText("Input Pattern"), Tooltip("use {number}, {variant}, {EnumType} (numeric), {(s)EnumType} (string)")]
@@ -46,7 +74,21 @@ namespace Feeder
         [PropertySpace(SpaceBefore = 6, SpaceAfter = 2)]
         [TabGroup("RenameMode", "Change Pattern")]
         [LabelText("Output Pattern"), Tooltip("use {number}, {variant}, {start:step}, {EnumType} (numeric), {(s)EnumType} (string)")]
-        public string outputPattern = "";
+        [ShowInInspector, OnValueChanged(nameof(SchedulePreviewRebuild))]
+        public string outputPattern
+        {
+            get => FToolPrefs.GetString(nameof(FRenameTool), nameof(outputPattern), "");
+            set => FToolPrefs.SetString(nameof(FRenameTool), nameof(outputPattern), value);
+        }
+
+        // Last value this tool wrote into outputPattern automatically. While outputPattern is empty
+        // or still equals this value the field is "auto-owned" and follows the analyzed pattern;
+        // once the user edits it, auto-seeding stops touching it. NonSerialized on purpose: after a
+        // domain reload any non-empty outputPattern is conservatively treated as user-owned.
+        [System.NonSerialized] private string _lastAutoSeededOutput;
+
+        [System.NonSerialized] private FAssetRevertService.RevertOperation _lastOp;
+        [System.NonSerialized] private bool _previewScheduled;
 
         [TabGroup("RenameMode", "Change Pattern")]
         [OnInspectorGUI, PropertyOrder(1)]
@@ -64,69 +106,118 @@ namespace Feeder
         }
         
         [TabGroup("RenameMode", "Change Pattern")]
-        [Button("Analyze Pattern", ButtonSizes.Medium)]
+        [Button("Analyze Pattern", ButtonSizes.Medium), PropertyOrder(2)]
         private void AnalyzePattern()
         {
-            inputPattern = BuildPatternFromAssets(TargetAssets);
+            RefreshInputPattern();
         }
 
-        [TabGroup("RenameMode", "Change Pattern")]
-        [Button("Apply Rename", ButtonSizes.Large)]
+        [TabGroup("RenameMode", "Change Pattern"), PropertyOrder(3)]
+        [ShowInInspector, TableList(IsReadOnly = true, NumberOfItemsPerPage = 10)]
+        [LabelText("Preview")]
+        private List<PreviewRow> patternPreview = new List<PreviewRow>();
+
+        private bool CanApplyRename => (TargetAssets?.Count ?? 0) > 0
+            && !string.IsNullOrEmpty(inputPattern) && !string.IsNullOrEmpty(outputPattern);
+
+        private bool CanApplyFindReplace => (TargetAssets?.Count ?? 0) > 0 && !string.IsNullOrEmpty(findString);
+
+        private bool HasTargets => (TargetAssets?.Count ?? 0) > 0;
+
+        private string ApplyBlockedReason =>
+            !HasTargets ? "TargetAssets trống — kéo asset vào hoặc bấm Add Selection."
+            : string.IsNullOrEmpty(inputPattern) ? "Input Pattern trống — bấm Analyze Pattern."
+            : "Output Pattern trống.";
+
+        [TabGroup("RenameMode", "Change Pattern"), PropertyOrder(4)]
+        [InfoBox("$ApplyBlockedReason", InfoMessageType.Info, VisibleIf = "@!CanApplyRename")]
+        [Button("Apply Rename", ButtonSizes.Large), EnableIf(nameof(CanApplyRename))]
         private void ApplyRename()
         {
-            if ((TargetAssets?.Count ?? 0) == 0)
-                throw new System.InvalidOperationException("TargetAssets is empty.");
-            if (string.IsNullOrEmpty(inputPattern))
-                throw new System.InvalidOperationException("inputPattern is empty.");
-            if (string.IsNullOrEmpty(outputPattern))
-                throw new System.InvalidOperationException("outputPattern is empty.");
-
-            var assetEntries = new Dictionary<string, AssetRenameEntry>(TargetAssets.Count);
-            var sceneEntries = new Dictionary<int, SceneObjectRenameEntry>(TargetAssets.Count);
-            var spriteEntries = new Dictionary<string, SpriteRenameEntry>(TargetAssets.Count);
-            BuildRenamePlan(TargetAssets, inputPattern, outputPattern, assetEntries, sceneEntries, spriteEntries);
-
-            if (assetEntries.Count == 0 && sceneEntries.Count == 0 && spriteEntries.Count == 0)
+            if (!CanApplyRename)
                 return;
 
-            ApplyAssetRenames(assetEntries);
-            ApplySpriteRenames(spriteEntries);
-            ApplySceneObjectRenames(sceneEntries);
+            var plan = BuildRenamePlan(TargetAssets, inputPattern, outputPattern);
+            ApplyPlan(plan, "Rename");
+        }
+
+        [TabGroup("RenameMode", "Change Pattern"), PropertyOrder(5)]
+        [Button("Revert Last Rename", ButtonSizes.Medium), EnableIf(nameof(HasRevertableRename))]
+        private void RevertLastRename()
+        {
+            if (FAssetRevertService.Revert(_lastOp, out var report))
+                _lastOp = null;
+            Debug.Log(report);
             RefreshInputPattern();
+        }
+
+        private bool HasRevertableRename => _lastOp != null && !_lastOp.IsEmpty;
+
+        /// <summary>Applies the non-error entries of a plan, records revert info and pings the results.</summary>
+        private void ApplyPlan(RenamePlan plan, string label)
+        {
+            if (plan.ChangeCount == 0)
+            {
+                Debug.Log($"[FRenameTool] {label}: không có gì để đổi tên"
+                          + (plan.ErrorCount > 0 ? $" ({plan.ErrorCount} lỗi — xem Preview)." : "."));
+                return;
+            }
+
+            var op = FAssetRevertService.Begin(label,
+                "Scene-object renames dùng Ctrl+Z; nút này revert asset-file và sprite renames.");
+            ApplyAssetRenames(plan.AssetEntries, op);
+            ApplySpriteRenames(plan.SpriteEntries, op);
+            ApplySceneObjectRenames(plan.SceneEntries);
+            _lastOp = op.IsEmpty ? null : op;
+
+            Debug.Log($"[FRenameTool] {label}: đổi tên {plan.ChangeCount}, bỏ qua {plan.ErrorCount} lỗi.");
+            RefreshInputPattern();
+            FSelectionUtils.SelectAndPing(TargetAssets.Where(a => a != null).ToList());
         }
 
         [PropertySpace(SpaceBefore = 10)]
         [TabGroup("RenameMode", "Find & Replace")]
         [LabelText("Find")]
-        public string findString = "";
+        [ShowInInspector, OnValueChanged(nameof(SchedulePreviewRebuild))]
+        public string findString
+        {
+            get => FToolPrefs.GetString(nameof(FRenameTool), nameof(findString), "");
+            set => FToolPrefs.SetString(nameof(FRenameTool), nameof(findString), value);
+        }
 
         [PropertySpace(SpaceBefore = 6, SpaceAfter = 6)]
         [TabGroup("RenameMode", "Find & Replace")]
         [LabelText("Replace With")]
-        public string replaceString = "";
+        [ShowInInspector, OnValueChanged(nameof(SchedulePreviewRebuild))]
+        public string replaceString
+        {
+            get => FToolPrefs.GetString(nameof(FRenameTool), nameof(replaceString), "");
+            set => FToolPrefs.SetString(nameof(FRenameTool), nameof(replaceString), value);
+        }
 
-        [TabGroup("RenameMode", "Find & Replace")]
-        [Button("Apply Find & Replace", ButtonSizes.Large)]
+        [TabGroup("RenameMode", "Find & Replace"), PropertyOrder(3)]
+        [ShowInInspector, TableList(IsReadOnly = true, NumberOfItemsPerPage = 10)]
+        [LabelText("Preview")]
+        private List<PreviewRow> findReplacePreview = new List<PreviewRow>();
+
+        private string FindReplaceBlockedReason =>
+            !HasTargets ? "TargetAssets trống — kéo asset vào hoặc bấm Add Selection." : "Find trống.";
+
+        [TabGroup("RenameMode", "Find & Replace"), PropertyOrder(4)]
+        [InfoBox("$FindReplaceBlockedReason", InfoMessageType.Info, VisibleIf = "@!CanApplyFindReplace")]
+        [Button("Apply Find & Replace", ButtonSizes.Large), EnableIf(nameof(CanApplyFindReplace))]
         private void ApplyFindAndReplace()
         {
-            if ((TargetAssets?.Count ?? 0) == 0)
-                throw new System.InvalidOperationException("TargetAssets is empty.");
-            if (string.IsNullOrEmpty(findString))
-                throw new System.InvalidOperationException("findString is empty.");
-
-            var assetEntries = new Dictionary<string, AssetRenameEntry>(TargetAssets.Count);
-            var sceneEntries = new Dictionary<int, SceneObjectRenameEntry>(TargetAssets.Count);
-            var spriteEntries = new Dictionary<string, SpriteRenameEntry>(TargetAssets.Count);
-            BuildFindReplacePlan(TargetAssets, findString, replaceString ?? "", assetEntries, sceneEntries, spriteEntries);
-
-            if (assetEntries.Count == 0 && sceneEntries.Count == 0 && spriteEntries.Count == 0)
+            if (!CanApplyFindReplace)
                 return;
 
-            ApplyAssetRenames(assetEntries);
-            ApplySpriteRenames(spriteEntries);
-            ApplySceneObjectRenames(sceneEntries);
-            RefreshInputPattern();
+            var plan = BuildFindReplacePlan(TargetAssets, findString, replaceString ?? "");
+            ApplyPlan(plan, "Find & Replace");
         }
+
+        [TabGroup("RenameMode", "Find & Replace"), PropertyOrder(5)]
+        [Button("Revert Last Rename", ButtonSizes.Medium), EnableIf(nameof(HasRevertableRename))]
+        private void RevertLastRenameFromFindReplaceTab() => RevertLastRename();
 
         [PropertySpace(SpaceBefore = 10)]
         [TabGroup("RenameMode", "Sprite → Texture Name")]
@@ -143,11 +234,12 @@ namespace Feeder
         }
 
         [TabGroup("RenameMode", "Sprite → Texture Name")]
-        [Button("Sync Sprite Name To Texture Name", ButtonSizes.Large)]
+        [InfoBox("TargetAssets trống — kéo asset vào hoặc bấm Add Selection.", InfoMessageType.Info, VisibleIf = "@!HasTargets")]
+        [Button("Sync Sprite Name To Texture Name", ButtonSizes.Large), EnableIf(nameof(HasTargets))]
         private void SyncSpriteNamesToTextureNames()
         {
-            if ((TargetAssets?.Count ?? 0) == 0)
-                throw new System.InvalidOperationException("TargetAssets is empty.");
+            if (!HasTargets)
+                return;
 
             var texturePaths = CollectMultipleModeTexturePaths(TargetAssets);
             if (texturePaths.Count == 0)
@@ -201,6 +293,50 @@ namespace Feeder
                 inputPattern = BuildPatternFromAssets(TargetAssets);
             else
                 inputPattern = "";
+            AutoSeedOutputPattern();
+            SchedulePreviewRebuild();
+        }
+
+        private void AutoSeedOutputPattern()
+        {
+            string current = outputPattern;
+            bool autoOwned = string.IsNullOrEmpty(current) || current == _lastAutoSeededOutput;
+            if (!autoOwned)
+                return;
+            outputPattern = inputPattern;
+            _lastAutoSeededOutput = inputPattern;
+        }
+
+        private void SchedulePreviewRebuild()
+        {
+            if (_previewScheduled) return;
+            _previewScheduled = true;
+            EditorApplication.delayCall += () =>
+            {
+                _previewScheduled = false;
+                RebuildPreviews();
+            };
+        }
+
+        private const int PreviewRowCap = 200;
+
+        private void RebuildPreviews()
+        {
+            patternPreview.Clear();
+            if (CanApplyRename)
+                CopyRowsCapped(BuildRenamePlan(TargetAssets, inputPattern, outputPattern).Rows, patternPreview);
+
+            findReplacePreview.Clear();
+            if (CanApplyFindReplace)
+                CopyRowsCapped(BuildFindReplacePlan(TargetAssets, findString, replaceString ?? "").Rows, findReplacePreview);
+        }
+
+        private static void CopyRowsCapped(List<PreviewRow> source, List<PreviewRow> destination)
+        {
+            for (int i = 0; i < source.Count && i < PreviewRowCap; i++)
+                destination.Add(source[i]);
+            if (source.Count > PreviewRowCap)
+                destination.Add(new PreviewRow { OldName = $"… {source.Count - PreviewRowCap} more" });
         }
 
         private static bool IsSceneObject(Object obj)
@@ -415,14 +551,9 @@ namespace Feeder
             }
         }
 
-        private static void BuildRenamePlan(
-            List<Object> assets,
-            string input,
-            string output,
-            Dictionary<string, AssetRenameEntry> assetEntries,
-            Dictionary<int, SceneObjectRenameEntry> sceneEntries,
-            Dictionary<string, SpriteRenameEntry> spriteEntries)
+        private static RenamePlan BuildRenamePlan(List<Object> assets, string input, string output)
         {
+            var plan = new RenamePlan();
             bool useEnumSlotIndex = EnumPatternResolver.PatternUsesEnum(output);
             int enumSlotIndex = 0;
             for (int i = 0; i < assets.Count; i++)
@@ -434,151 +565,152 @@ namespace Feeder
                     continue;
                 }
 
-                if (TryGetSpriteTarget(asset, out var spriteTexPath, out var oldSpriteName))
+                int idx = useEnumSlotIndex ? enumSlotIndex : i;
+                try
                 {
-                    int idx = useEnumSlotIndex ? enumSlotIndex : i;
-                    var resolvedSpriteOutput = EnumPatternResolver.Resolve(output, idx);
-                    var newSpriteName = FModifyStringUtils.ApplyPattern(oldSpriteName, input, resolvedSpriteOutput, idx);
-                    if (string.IsNullOrEmpty(newSpriteName))
-                        throw new System.InvalidOperationException($"rename result is empty at index {i}.");
-                    if (newSpriteName != oldSpriteName)
-                        AddSpriteEntry(spriteEntries, spriteTexPath, oldSpriteName, newSpriteName);
-                    if (useEnumSlotIndex) enumSlotIndex++;
-                    continue;
-                }
-
-                if (IsSceneObject(asset))
-                {
-                    var go = (GameObject)asset;
-                    var oldName = go.name;
-                    int indexForPattern = useEnumSlotIndex ? enumSlotIndex : i;
-                    var resolvedOutput = EnumPatternResolver.Resolve(output, indexForPattern);
-                    var newName = FModifyStringUtils.ApplyPattern(oldName, input, resolvedOutput, indexForPattern);
-                    if (string.IsNullOrEmpty(newName))
-                        throw new System.InvalidOperationException($"rename result is empty at index {i}.");
-
-                    if (newName != oldName)
+                    if (TryGetSpriteTarget(asset, out var spriteTexPath, out var oldSpriteName))
                     {
-                        int instanceId = go.GetInstanceID();
-                        if (!sceneEntries.TryGetValue(instanceId, out var entry))
-                            sceneEntries.Add(instanceId, new SceneObjectRenameEntry { GameObject = go, OldName = oldName, NewName = newName });
-                        else if (entry.NewName != newName)
-                            throw new System.InvalidOperationException($"conflicting rename for scene object '{go.name}'.");
+                        var resolvedSpriteOutput = EnumPatternResolver.Resolve(output, idx);
+                        var newSpriteName = FModifyStringUtils.ApplyPattern(oldSpriteName, input, resolvedSpriteOutput, idx);
+                        if (string.IsNullOrEmpty(newSpriteName))
+                            throw new System.InvalidOperationException("rename result is empty.");
+                        if (newSpriteName != oldSpriteName)
+                            AddSpriteEntry(plan.SpriteEntries, spriteTexPath, oldSpriteName, newSpriteName);
+                        plan.AddRow(oldSpriteName, newSpriteName);
                     }
-                    if (useEnumSlotIndex) enumSlotIndex++;
-                    continue;
-                }
-
-                var assetPath = AssetDatabase.GetAssetPath(asset);
-                if (string.IsNullOrEmpty(assetPath))
-                {
-                    if (useEnumSlotIndex) enumSlotIndex++;
-                    Debug.LogWarning($"[FRenameTool] Skipping TargetAssets[{i}] (no asset path).");
-                    continue;
-                }
-
-                var oldFileName = Path.GetFileNameWithoutExtension(assetPath);
-                int indexForAsset = useEnumSlotIndex ? enumSlotIndex : i;
-                var resolvedAssetOutput = EnumPatternResolver.Resolve(output, indexForAsset);
-                var newAssetName = FModifyStringUtils.ApplyPattern(oldFileName, input, resolvedAssetOutput, indexForAsset);
-                if (string.IsNullOrEmpty(newAssetName))
-                    throw new System.InvalidOperationException($"rename result is empty at index {i}.");
-
-                if (newAssetName != oldFileName)
-                {
-                    if (!assetEntries.TryGetValue(assetPath, out var entry))
+                    else if (IsSceneObject(asset))
                     {
-                        assetEntries.Add(assetPath, new AssetRenameEntry
+                        var go = (GameObject)asset;
+                        var oldName = go.name;
+                        var resolvedOutput = EnumPatternResolver.Resolve(output, idx);
+                        var newName = FModifyStringUtils.ApplyPattern(oldName, input, resolvedOutput, idx);
+                        if (string.IsNullOrEmpty(newName))
+                            throw new System.InvalidOperationException("rename result is empty.");
+
+                        if (newName != oldName)
                         {
-                            AssetPath = assetPath,
-                            OldName = oldFileName,
-                            NewName = newAssetName
-                        });
+                            int instanceId = go.GetInstanceID();
+                            if (!plan.SceneEntries.TryGetValue(instanceId, out var entry))
+                                plan.SceneEntries.Add(instanceId, new SceneObjectRenameEntry { GameObject = go, OldName = oldName, NewName = newName });
+                            else if (entry.NewName != newName)
+                                throw new System.InvalidOperationException($"conflicting rename for scene object '{go.name}'.");
+                        }
+                        plan.AddRow(oldName, newName);
                     }
-                    else if (entry.NewName != newAssetName)
+                    else
                     {
-                        throw new System.InvalidOperationException($"conflicting rename for asset {assetPath}.");
+                        var assetPath = AssetDatabase.GetAssetPath(asset);
+                        if (string.IsNullOrEmpty(assetPath))
+                            throw new System.InvalidOperationException("no asset path.");
+
+                        var oldFileName = Path.GetFileNameWithoutExtension(assetPath);
+                        var resolvedAssetOutput = EnumPatternResolver.Resolve(output, idx);
+                        var newAssetName = FModifyStringUtils.ApplyPattern(oldFileName, input, resolvedAssetOutput, idx);
+                        if (string.IsNullOrEmpty(newAssetName))
+                            throw new System.InvalidOperationException("rename result is empty.");
+
+                        if (newAssetName != oldFileName)
+                        {
+                            if (!plan.AssetEntries.TryGetValue(assetPath, out var entry))
+                            {
+                                plan.AssetEntries.Add(assetPath, new AssetRenameEntry
+                                {
+                                    AssetPath = assetPath,
+                                    OldName = oldFileName,
+                                    NewName = newAssetName
+                                });
+                            }
+                            else if (entry.NewName != newAssetName)
+                            {
+                                throw new System.InvalidOperationException($"conflicting rename for asset {assetPath}.");
+                            }
+                        }
+                        plan.AddRow(oldFileName, newAssetName);
                     }
+                }
+                catch (System.Exception ex)
+                {
+                    plan.AddErrorRow(asset.name, ex.Message);
                 }
                 if (useEnumSlotIndex) enumSlotIndex++;
             }
+            return plan;
         }
 
-        private static void BuildFindReplacePlan(
-            List<Object> assets,
-            string find,
-            string replace,
-            Dictionary<string, AssetRenameEntry> assetEntries,
-            Dictionary<int, SceneObjectRenameEntry> sceneEntries,
-            Dictionary<string, SpriteRenameEntry> spriteEntries)
+        private static RenamePlan BuildFindReplacePlan(List<Object> assets, string find, string replace)
         {
+            var plan = new RenamePlan();
             for (int i = 0; i < assets.Count; i++)
             {
                 var asset = assets[i];
                 if (asset == null)
-                {
-                    Debug.LogWarning($"[FRenameTool] Skipping null at TargetAssets[{i}].");
                     continue;
-                }
 
-                if (TryGetSpriteTarget(asset, out var spriteTexPath, out var oldSpriteName))
+                try
                 {
-                    var newSpriteName = oldSpriteName.Replace(find, replace);
-                    if (newSpriteName != oldSpriteName)
-                        AddSpriteEntry(spriteEntries, spriteTexPath, oldSpriteName, newSpriteName);
-                    continue;
-                }
-
-                if (IsSceneObject(asset))
-                {
-                    var go = (GameObject)asset;
-                    var oldName = go.name;
-                    var newName = oldName.Replace(find, replace);
-                    if (newName != oldName)
+                    if (TryGetSpriteTarget(asset, out var spriteTexPath, out var oldSpriteName))
                     {
-                        int instanceId = go.GetInstanceID();
-                        if (!sceneEntries.TryGetValue(instanceId, out var entry))
-                            sceneEntries.Add(instanceId, new SceneObjectRenameEntry { GameObject = go, OldName = oldName, NewName = newName });
-                        else if (entry.NewName != newName)
-                            throw new System.InvalidOperationException($"conflicting rename for scene object '{go.name}'.");
+                        var newSpriteName = oldSpriteName.Replace(find, replace);
+                        if (newSpriteName != oldSpriteName)
+                            AddSpriteEntry(plan.SpriteEntries, spriteTexPath, oldSpriteName, newSpriteName);
+                        plan.AddRow(oldSpriteName, newSpriteName);
                     }
-                    continue;
-                }
-
-                var assetPath = AssetDatabase.GetAssetPath(asset);
-                if (string.IsNullOrEmpty(assetPath))
-                {
-                    Debug.LogWarning($"[FRenameTool] Skipping TargetAssets[{i}] (no asset path).");
-                    continue;
-                }
-
-                var oldFileName = Path.GetFileNameWithoutExtension(assetPath);
-                var newFileName = oldFileName.Replace(find, replace);
-
-                if (newFileName == oldFileName)
-                    continue;
-
-                if (!assetEntries.TryGetValue(assetPath, out var assetEntry))
-                {
-                    assetEntries.Add(assetPath, new AssetRenameEntry
+                    else if (IsSceneObject(asset))
                     {
-                        AssetPath = assetPath,
-                        OldName = oldFileName,
-                        NewName = newFileName
-                    });
+                        var go = (GameObject)asset;
+                        var oldName = go.name;
+                        var newName = oldName.Replace(find, replace);
+                        if (newName != oldName)
+                        {
+                            int instanceId = go.GetInstanceID();
+                            if (!plan.SceneEntries.TryGetValue(instanceId, out var entry))
+                                plan.SceneEntries.Add(instanceId, new SceneObjectRenameEntry { GameObject = go, OldName = oldName, NewName = newName });
+                            else if (entry.NewName != newName)
+                                throw new System.InvalidOperationException($"conflicting rename for scene object '{go.name}'.");
+                        }
+                        plan.AddRow(oldName, newName);
+                    }
+                    else
+                    {
+                        var assetPath = AssetDatabase.GetAssetPath(asset);
+                        if (string.IsNullOrEmpty(assetPath))
+                            throw new System.InvalidOperationException("no asset path.");
+
+                        var oldFileName = Path.GetFileNameWithoutExtension(assetPath);
+                        var newFileName = oldFileName.Replace(find, replace);
+                        if (newFileName != oldFileName)
+                        {
+                            if (!plan.AssetEntries.TryGetValue(assetPath, out var assetEntry))
+                            {
+                                plan.AssetEntries.Add(assetPath, new AssetRenameEntry
+                                {
+                                    AssetPath = assetPath,
+                                    OldName = oldFileName,
+                                    NewName = newFileName
+                                });
+                            }
+                            else if (assetEntry.NewName != newFileName)
+                            {
+                                throw new System.InvalidOperationException($"conflicting rename for asset {assetPath}.");
+                            }
+                        }
+                        plan.AddRow(oldFileName, newFileName);
+                    }
                 }
-                else if (assetEntry.NewName != newFileName)
+                catch (System.Exception ex)
                 {
-                    throw new System.InvalidOperationException($"conflicting rename for asset {assetPath}.");
+                    plan.AddErrorRow(asset.name, ex.Message);
                 }
             }
+            return plan;
         }
 
-        private static void ApplyAssetRenames(Dictionary<string, AssetRenameEntry> assetEntries)
+        private static void ApplyAssetRenames(Dictionary<string, AssetRenameEntry> assetEntries, FAssetRevertService.RevertOperation op)
         {
             if (assetEntries.Count == 0)
                 return;
 
+            var renamed = new List<AssetRenameEntry>(assetEntries.Count);
             AssetDatabase.StartAssetEditing();
             try
             {
@@ -586,7 +718,12 @@ namespace Feeder
                 {
                     var renameError = AssetDatabase.RenameAsset(entry.AssetPath, entry.NewName);
                     if (!string.IsNullOrEmpty(renameError))
-                        throw new System.Exception(renameError);
+                    {
+                        Debug.LogError($"[FRenameTool] Không đổi tên được '{entry.AssetPath}': {renameError}");
+                        continue;
+                    }
+                    renamed.Add(entry);
+                    FAssetRevertService.RecordAssetRename(op, GetPathAfterRename(entry), entry.OldName);
                 }
             }
             finally
@@ -594,8 +731,15 @@ namespace Feeder
                 AssetDatabase.StopAssetEditing();
             }
 
-            foreach (var entry in assetEntries.Values)
+            foreach (var entry in renamed)
                 TryRenameTextureSprites(entry);
+        }
+
+        private static string GetPathAfterRename(AssetRenameEntry entry)
+        {
+            var dir = Path.GetDirectoryName(entry.AssetPath)?.Replace('\\', '/') ?? "";
+            var ext = Path.GetExtension(entry.AssetPath);
+            return string.IsNullOrEmpty(dir) ? entry.NewName + ext : dir + "/" + entry.NewName + ext;
         }
 
         private static void TryRenameTextureSprites(AssetRenameEntry entry)
@@ -628,7 +772,7 @@ namespace Feeder
             }
         }
 
-        private static void ApplySpriteRenames(Dictionary<string, SpriteRenameEntry> spriteEntries)
+        private static void ApplySpriteRenames(Dictionary<string, SpriteRenameEntry> spriteEntries, FAssetRevertService.RevertOperation op)
         {
             if (spriteEntries.Count == 0)
                 return;
@@ -639,7 +783,9 @@ namespace Feeder
                 foreach (var group in spriteEntries.Values.GroupBy(e => e.TexturePath))
                 {
                     var renames = group.Select(e => (e.OldName, e.NewName)).ToList();
-                    FSpriteRenameUtils.RenameSprites(group.Key, renames, saveAndReimport: true);
+                    if (FSpriteRenameUtils.RenameSprites(group.Key, renames, saveAndReimport: true) > 0)
+                        foreach (var e in group)
+                            FAssetRevertService.RecordSpriteRename(op, e.TexturePath, e.OldName, e.NewName);
                 }
             }
             finally

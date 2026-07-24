@@ -16,12 +16,23 @@ namespace Feeder
         [LabelText("Replace With (Script A)")]
         [ValueDropdown(nameof(GetComponentTypeOptions))]
         [ShowInInspector]
-        private Type replaceWithType;
+        private Type replaceWithType
+        {
+            get => ResolveType(FToolPrefs.GetString(nameof(FComponentReplacerTool), nameof(replaceWithType), null));
+            set => FToolPrefs.SetString(nameof(FComponentReplacerTool), nameof(replaceWithType), value?.AssemblyQualifiedName);
+        }
 
         [LabelText("Find (Script B)")]
         [ValueDropdown(nameof(GetComponentTypeOptions))]
         [ShowInInspector]
-        private Type findType;
+        private Type findType
+        {
+            get => ResolveType(FToolPrefs.GetString(nameof(FComponentReplacerTool), nameof(findType), null));
+            set => FToolPrefs.SetString(nameof(FComponentReplacerTool), nameof(findType), value?.AssemblyQualifiedName);
+        }
+
+        private static Type ResolveType(string assemblyQualifiedName)
+            => string.IsNullOrEmpty(assemblyQualifiedName) ? null : Type.GetType(assemblyQualifiedName);
 
         [Button(ButtonSizes.Large)]
         public void ReplaceComponent()

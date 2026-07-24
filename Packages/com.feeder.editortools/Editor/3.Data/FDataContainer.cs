@@ -19,6 +19,12 @@ namespace Feeder
         [SerializeField] private int targetMeshesRightPreviewIndex;
         [SerializeField] private string assetCollectorFolder = "Assets/";
         [SerializeField] private string assetOrganizerFolder = "Assets/";
+        [SerializeField] private ScriptableObject dataClonerSourceSO;
+        [SerializeField] private ScriptableObject dataClonerDestinationSO;
+        [SerializeField] private List<GameObject> characterMeshSources = new List<GameObject>();
+        [SerializeField] private Transform characterMeshNewArmature;
+        [SerializeField] private Transform characterMeshNewParent;
+        [SerializeField] private List<Object> fbxUnpackSources = new List<Object>();
 
         public List<GameObject> TargetPrefabs => GetOrInit(ref targetPrefabs);
         public List<Object> TargetAssets => GetOrInit(ref targetAssets);
@@ -27,6 +33,12 @@ namespace Feeder
         public List<Mesh> TargetMeshes => GetOrInit(ref targetMeshes);
         public string AssetCollectorFolder { get => assetCollectorFolder ?? "Assets/"; set => assetCollectorFolder = value; }
         public string AssetOrganizerFolder { get => assetOrganizerFolder ?? "Assets/"; set => assetOrganizerFolder = value; }
+        public ScriptableObject DataClonerSourceSO { get => dataClonerSourceSO; set => dataClonerSourceSO = value; }
+        public ScriptableObject DataClonerDestinationSO { get => dataClonerDestinationSO; set => dataClonerDestinationSO = value; }
+        public List<GameObject> CharacterMeshSources => GetOrInit(ref characterMeshSources);
+        public Transform CharacterMeshNewArmature { get => characterMeshNewArmature; set => characterMeshNewArmature = value; }
+        public Transform CharacterMeshNewParent { get => characterMeshNewParent; set => characterMeshNewParent = value; }
+        public List<Object> FbxUnpackSources => GetOrInit(ref fbxUnpackSources);
 
         /// <summary>Index in TargetsMesh used as "compare target" in Deduplicate Mesh Tool.</summary>
         public int TargetsMeshCompareIndex { get => targetsMeshCompareIndex; set => targetsMeshCompareIndex = Mathf.Clamp(value, 0, Mathf.Max(0, TargetsMesh.Count - 1)); }
@@ -50,6 +62,8 @@ namespace Feeder
             if (targetAssets == null) targetAssets = new List<Object>();
             if (targetsMesh == null) targetsMesh = new List<MeshRenderer>();
             if (targetMeshes == null) targetMeshes = new List<Mesh>();
+            if (characterMeshSources == null) characterMeshSources = new List<GameObject>();
+            if (fbxUnpackSources == null) fbxUnpackSources = new List<Object>();
             if (assetCollectorFolder == null) assetCollectorFolder = "Assets/";
             if (assetOrganizerFolder == null) assetOrganizerFolder = "Assets/";
         }

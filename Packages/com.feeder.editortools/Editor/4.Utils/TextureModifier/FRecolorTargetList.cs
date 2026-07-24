@@ -23,6 +23,36 @@ namespace Feeder
         [SerializeField, HideInInspector]
         private GameObject activeTarget;
 
+        [PropertyOrder(0)]
+        [ButtonGroup("RecolorSelRow"), Button("Add Selection", ButtonSizes.Small)]
+        private void AddSelection()
+        {
+            var picked = FSelectionUtils.CollectGameObjects();
+            if (picked.Count == 0)
+            {
+                Debug.LogWarning("[Texture Modifier] Chưa chọn GameObject nào.");
+                return;
+            }
+            foreach (var go in picked)
+                if (!targets.Contains(go))
+                    targets.Add(go);
+        }
+
+        [PropertyOrder(0)]
+        [ButtonGroup("RecolorSelRow"), Button("Replace With Selection", ButtonSizes.Small)]
+        private void ReplaceWithSelection()
+        {
+            targets.Clear();
+            AddSelection();
+        }
+
+        [PropertyOrder(0)]
+        [ButtonGroup("RecolorSelRow"), Button("Clear", ButtonSizes.Small)]
+        private void ClearTargets()
+        {
+            targets.Clear();
+        }
+
         public int Count => targets.Count;
 
         /// <summary>

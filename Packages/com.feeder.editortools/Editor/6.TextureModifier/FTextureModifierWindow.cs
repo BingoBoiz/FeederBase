@@ -24,7 +24,13 @@ namespace Feeder
         private static readonly string[] TabLabels = { "Mesh Palette", "Texture Recolor" };
         private static readonly string[] RecolorPreviewLabels = { "Original", "Result", "Mask" };
 
-        private Tab tab;
+        private const string PrefsOwner = nameof(FTextureModifierWindow);
+
+        private Tab tab
+        {
+            get => FToolPrefs.GetEnum(PrefsOwner, nameof(tab), Tab.MeshPalette);
+            set => FToolPrefs.SetEnum(PrefsOwner, nameof(tab), value);
+        }
 
         /// <summary>Target list shared by both tabs; its active entry drives the sessions.</summary>
         [SerializeField] private FRecolorTargetList targetList = new FRecolorTargetList();
@@ -36,8 +42,16 @@ namespace Feeder
         private readonly MeshPaletteColorizerSession session = new MeshPaletteColorizerSession();
         private readonly MeshPalettePreviewController preview = new MeshPalettePreviewController();
 
-        private int materialSlotIndex;
-        private int colorTolerance = 4;
+        private int materialSlotIndex
+        {
+            get => FToolPrefs.GetInt(PrefsOwner, nameof(materialSlotIndex), 0);
+            set => FToolPrefs.SetInt(PrefsOwner, nameof(materialSlotIndex), value);
+        }
+        private int colorTolerance
+        {
+            get => FToolPrefs.GetInt(PrefsOwner, nameof(colorTolerance), 4);
+            set => FToolPrefs.SetInt(PrefsOwner, nameof(colorTolerance), value);
+        }
         private PaletteColorBuildResult currentBuildResult;
 
         private int hoverColorIndex = -1;
@@ -49,12 +63,28 @@ namespace Feeder
         private readonly TextureRecolorSession recolorSession = new TextureRecolorSession();
         private readonly TextureRecolorPreviewController recolorPreview = new TextureRecolorPreviewController();
 
-        private int recolorSlotIndex;
-        private int recolorMaxClusters = 8;
+        private int recolorSlotIndex
+        {
+            get => FToolPrefs.GetInt(PrefsOwner, nameof(recolorSlotIndex), 0);
+            set => FToolPrefs.SetInt(PrefsOwner, nameof(recolorSlotIndex), value);
+        }
+        private int recolorMaxClusters
+        {
+            get => FToolPrefs.GetInt(PrefsOwner, nameof(recolorMaxClusters), 8);
+            set => FToolPrefs.SetInt(PrefsOwner, nameof(recolorMaxClusters), value);
+        }
         private RecolorMaskSettings recolorMask = RecolorMaskSettings.Default;
-        private RecolorPreviewMode recolorPreviewMode = RecolorPreviewMode.Result;
+        private RecolorPreviewMode recolorPreviewMode
+        {
+            get => FToolPrefs.GetEnum(PrefsOwner, nameof(recolorPreviewMode), RecolorPreviewMode.Result);
+            set => FToolPrefs.SetEnum(PrefsOwner, nameof(recolorPreviewMode), value);
+        }
         private bool recolorAdvancedFoldout;
-        private bool recolorScenePreview = true;
+        private bool recolorScenePreview
+        {
+            get => FToolPrefs.GetBool(PrefsOwner, nameof(recolorScenePreview), true);
+            set => FToolPrefs.SetBool(PrefsOwner, nameof(recolorScenePreview), value);
+        }
         private bool recolorPreviewDirty;
         private bool recolorApplied;
         private double recolorLastCacheRebuildTime;

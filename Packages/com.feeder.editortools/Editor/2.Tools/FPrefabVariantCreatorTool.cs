@@ -41,7 +41,9 @@ namespace Feeder
                 locateModel,
                 saveFolderPath);
 
-            int createdCount = FPrefabVariantCreatorService.CreatePrefabVariantsFromModels(config, TargetPrefabs);
+            var created = new List<GameObject>();
+            int createdCount = FPrefabVariantCreatorService.CreatePrefabVariantsFromModels(config, TargetPrefabs, created);
+            FSelectionUtils.SelectAndPing(created);
             Debug.Log($"<color=green>Created {createdCount} prefab variant(s).</color>");
         }
 

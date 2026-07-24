@@ -38,6 +38,7 @@ namespace Feeder
         [LabelText("Search Folder")]
         [ShowInInspector]
         [OnValueChanged(nameof(OnFolderChanged))]
+        [InlineButton(nameof(UseSelectedFolder), "Use Selected Folder")]
         [InlineButton(nameof(ScanButton), "Scan")]
         private string SearchFolder
         {
@@ -54,7 +55,11 @@ namespace Feeder
         [ValueDropdown(nameof(GetAvailableTypesDropdown))]
         [LabelText("Asset Type")]
         [ShowInInspector]
-        private string _selectedType;
+        private string SelectedType
+        {
+            get => FToolPrefs.GetString(nameof(FAssetCollectorTool), nameof(SelectedType), null);
+            set => FToolPrefs.SetString(nameof(FAssetCollectorTool), nameof(SelectedType), value);
+        }
 
         [System.NonSerialized] private readonly List<string> _availableTypes = new List<string>();
         [System.NonSerialized] private bool _initialized;
@@ -71,13 +76,34 @@ namespace Feeder
 
         private void ScanButton() => RunScan();
 
+        /// <summary>Seeds SearchFolder from the Project selection (an asset's parent folder counts too).</summary>
+        private void UseSelectedFolder()
+        {
+            var obj = Selection.activeObject;
+            var path = obj != null ? AssetDatabase.GetAssetPath(obj) : null;
+            if (string.IsNullOrEmpty(path))
+            {
+                Debug.LogWarning("[Asset Collector] Chưa chọn gì trong Project.");
+                return;
+            }
+            if (!AssetDatabase.IsValidFolder(path))
+                path = System.IO.Path.GetDirectoryName(path)?.Replace('\\', '/');
+            if (string.IsNullOrEmpty(path))
+                return;
+            SearchFolder = path;
+            RunScan();
+        }
+
         private void RunScan()
         {
             var folder = FDataPersistenceService.GetOrCreateDataContainer().AssetCollectorFolder;
             _availableTypes.Clear();
-            _selectedType = null;
 
-            if (string.IsNullOrEmpty(folder)) return;
+            if (string.IsNullOrEmpty(folder))
+            {
+                SelectedType = null;
+                return;
+            }
 
             foreach (var (label, filter) in AssetTypeMap)
             {
@@ -88,6 +114,10 @@ namespace Feeder
             // "All" chỉ có nghĩa khi folder chứa ít nhất 1 loại asset.
             if (_availableTypes.Count > 0)
                 _availableTypes.Insert(0, AllTypesLabel);
+
+            // Giữ lựa chọn đã lưu nếu vẫn hợp lệ; chỉ clear khi loại đó không còn trong folder.
+            if (!_availableTypes.Contains(SelectedType))
+                SelectedType = null;
         }
 
         [PropertyOrder(0)]
@@ -95,7 +125,8 @@ namespace Feeder
         [GUIColor(0.3f, 0.8f, 0.3f)]
         private void CollectAssets()
         {
-            if (string.IsNullOrEmpty(_selectedType))
+            var selectedType = SelectedType;
+            if (string.IsNullOrEmpty(selectedType))
             {
                 Debug.LogWarning("[Asset Collector] Chưa chọn loại asset.");
                 return;
@@ -106,13 +137,13 @@ namespace Feeder
             // "All" gộp mọi loại asset trong map; các loại khác chỉ nạp loại được chọn.
             // Distinct dedupe ref vì một số filter có thể trả cùng object.
             IEnumerable<Object> loaded;
-            if (_selectedType == AllTypesLabel)
+            if (selectedType == AllTypesLabel)
             {
                 loaded = AssetTypeMap.SelectMany(t => LoadAssetsForFilter(t.Filter, folder));
             }
             else
             {
-                var filter = GetFilter(_selectedType);
+                var filter = GetFilter(selectedType);
                 if (filter == null) return;
                 loaded = LoadAssetsForFilter(filter, folder);
             }
@@ -128,7 +159,8 @@ namespace Feeder
             data.SyncAllFromAssets();
             FDataPersistenceService.SaveData(data);
 
-            Debug.Log($"<color=cyan>[Asset Collector] Đã nạp {assets.Count} '{_selectedType}' → TargetAssets ({data.TargetPrefabs.Count} prefabs → TargetPrefabs)</color>");
+            FSelectionUtils.SelectAndPing(assets);
+            Debug.Log($"<color=cyan>[Asset Collector] Đã nạp {assets.Count} '{selectedType}' → TargetAssets ({data.TargetPrefabs.Count} prefabs → TargetPrefabs)</color>");
         }
 
         // Sprite là sub-asset của texture nên phải LoadAllAssetsAtPath rồi lọc Sprite,

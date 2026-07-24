@@ -9,7 +9,8 @@ namespace Feeder
     {
         public static int CreatePrefabVariantsFromModels(
             PrefabVariantCreatorConfig config,
-            IReadOnlyList<GameObject> models)
+            IReadOnlyList<GameObject> models,
+            List<GameObject> createdVariants = null)
         {
             ValidateInputArguments(config, models);
 
@@ -23,7 +24,8 @@ namespace Feeder
                     continue;
                 }
 
-                CreateAndSaveVariantPrefab(config, model);
+                var saved = CreateAndSaveVariantPrefab(config, model);
+                createdVariants?.Add(saved);
                 createdCount++;
             }
 
@@ -50,7 +52,7 @@ namespace Feeder
         }
 
         // Core Flow
-        private static void CreateAndSaveVariantPrefab(
+        private static GameObject CreateAndSaveVariantPrefab(
             PrefabVariantCreatorConfig config,
             GameObject model)
         {
@@ -62,7 +64,7 @@ namespace Feeder
             try
             {
                 AddModelToPrefabInstance(config, model, modelName, tempInstance);
-                SavePrefabAssetAndDestroyTempInstance(savePath, tempInstance);
+                return SavePrefabAssetAndDestroyTempInstance(savePath, tempInstance);
             }
             catch
             {
@@ -90,13 +92,18 @@ namespace Feeder
             GameObject prefabInstance)
         {
             Transform parent = ResolveTargetParentTransform(config, prefabInstance);
-            GameObject clonedModel = CloneModelUnderParent(model, modelName, parent);
 
             if (config.LocateModel == null)
             {
+                // Merge mode: content must be unpacked before merging into the base root.
+                GameObject clonedModel = ClonePlainUnderParent(model, modelName, parent);
                 MoveChildrenToParentAndDestroyRootObject(
                     clonedModel.transform,
                     parent);
+            }
+            else
+            {
+                CloneModelUnderParent(model, modelName, parent);
             }
         }
 
@@ -132,6 +139,39 @@ namespace Feeder
             string modelName,
             Transform parent)
         {
+            GameObject clone;
+
+            if (EditorUtility.IsPersistent(model))
+            {
+                clone = (GameObject)PrefabUtility.InstantiatePrefab(model, parent);
+            }
+            else if (PrefabUtility.IsPartOfPrefabInstance(model)
+                     && PrefabUtility.GetOutermostPrefabInstanceRoot(model) == model)
+            {
+                // Scene prefab instance: re-instantiate the source asset to keep the
+                // prefab link, then carry over the instance's property overrides.
+                var sourceAsset = PrefabUtility.GetCorrespondingObjectFromSource(model);
+                clone = (GameObject)PrefabUtility.InstantiatePrefab(sourceAsset, parent);
+
+                var modifications = PrefabUtility.GetPropertyModifications(model);
+                if (modifications != null)
+                    PrefabUtility.SetPropertyModifications(clone, modifications);
+            }
+            else
+            {
+                clone = UnityEngine.Object.Instantiate(model, parent, true);
+            }
+
+            clone.name = modelName;
+            clone.transform.localPosition = Vector3.zero;
+            return clone;
+        }
+
+        private static GameObject ClonePlainUnderParent(
+            GameObject model,
+            string modelName,
+            Transform parent)
+        {
             var clone = UnityEngine.Object.Instantiate(model, parent, true);
             clone.name = modelName;
             clone.transform.localPosition = Vector3.zero;
@@ -139,7 +179,7 @@ namespace Feeder
         }
 
         // Step 3 - Save
-        private static void SavePrefabAssetAndDestroyTempInstance(
+        private static GameObject SavePrefabAssetAndDestroyTempInstance(
             string path,
             GameObject prefabInstance)
         {
@@ -149,6 +189,7 @@ namespace Feeder
                 throw new InvalidOperationException("Failed to save prefab.");
 
             UnityEngine.Object.DestroyImmediate(prefabInstance);
+            return saved;
         }
 
         // Helpers

@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using Sirenix.OdinInspector;
-using Sirenix.Serialization;
 using UnityEditor;
 using UnityEngine;
 
@@ -28,30 +27,56 @@ namespace Feeder
                    "Texture/material gốc giữ nguyên, tool sinh bản copy riêng cho VFX này.";
         }
 
+        private const string PrefsOwner = nameof(FVfxFlipbookTrimTool);
+
         [Title("Settings")]
         [LabelText("Check Tile Content (alpha/luma)")]
-        [ShowInInspector, OdinSerialize]
-        private bool checkTileContent = true;
+        [ShowInInspector]
+        private bool checkTileContent
+        {
+            get => FToolPrefs.GetBool(PrefsOwner, nameof(checkTileContent), true);
+            set => FToolPrefs.SetBool(PrefsOwner, nameof(checkTileContent), value);
+        }
 
-        [LabelText("Alpha Threshold"), Range(0f, 0.2f)]
-        [ShowInInspector, OdinSerialize]
-        private float alphaThreshold = 0.004f;
+        [LabelText("Alpha Threshold"), PropertyRange(0f, 0.2f)]
+        [ShowInInspector]
+        private float alphaThreshold
+        {
+            get => FToolPrefs.GetFloat(PrefsOwner, nameof(alphaThreshold), 0.004f);
+            set => FToolPrefs.SetFloat(PrefsOwner, nameof(alphaThreshold), value);
+        }
 
-        [LabelText("Luma Threshold"), Range(0f, 0.2f)]
-        [ShowInInspector, OdinSerialize]
-        private float lumaThreshold = 0.004f;
+        [LabelText("Luma Threshold"), PropertyRange(0f, 0.2f)]
+        [ShowInInspector]
+        private float lumaThreshold
+        {
+            get => FToolPrefs.GetFloat(PrefsOwner, nameof(lumaThreshold), 0.004f);
+            set => FToolPrefs.SetFloat(PrefsOwner, nameof(lumaThreshold), value);
+        }
 
         [LabelText("Scan Project For Other Consumers")]
-        [ShowInInspector, OdinSerialize]
-        private bool scanProjectConsumers = true;
+        [ShowInInspector]
+        private bool scanProjectConsumers
+        {
+            get => FToolPrefs.GetBool(PrefsOwner, nameof(scanProjectConsumers), true);
+            set => FToolPrefs.SetBool(PrefsOwner, nameof(scanProjectConsumers), value);
+        }
 
         [LabelText("Output Subfolder")]
-        [ShowInInspector, OdinSerialize]
-        private string outputSubfolder = "_Trim";
+        [ShowInInspector]
+        private string outputSubfolder
+        {
+            get => FToolPrefs.GetString(PrefsOwner, nameof(outputSubfolder), "_Trim");
+            set => FToolPrefs.SetString(PrefsOwner, nameof(outputSubfolder), value);
+        }
 
         [LabelText("Asset Suffix")]
-        [ShowInInspector, OdinSerialize]
-        private string assetSuffix = "_trim";
+        [ShowInInspector]
+        private string assetSuffix
+        {
+            get => FToolPrefs.GetString(PrefsOwner, nameof(assetSuffix), "_trim");
+            set => FToolPrefs.SetString(PrefsOwner, nameof(assetSuffix), value);
+        }
 
         private List<TrimPlan> _plans;
 
@@ -633,6 +658,7 @@ namespace Feeder
 
                 long newBytes = new FileInfo(newTexPath).Length;
                 plan.Applied = true;
+                FSelectionUtils.Ping(newTex);
                 Debug.Log(
                     $"<color=green>[FVfxFlipbookTrimTool] '{plan.Source.name}': {plan.TotalFrames} → {keptCount} tiles " +
                     $"({plan.TilesX}x{plan.TilesY} → {newX}x{newY}), {changed} particle system(s) rewired.\n" +

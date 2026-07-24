@@ -52,12 +52,16 @@ namespace Feeder
             private Color MergeColor => Owner != null ? Owner.GetMergeColor(this) : Color.white;
         }
 
-        [SerializeField]
+        [ShowInInspector]
         [PropertyOrder(99)]
         [PropertyRange(0f, 1f)]
         [LabelText("Find Tolerance")]
         [Tooltip("0 = giống hệt, tăng lên để FindMesh gom cả những mesh lệch nhẹ vào chung group.")]
-        private float _similarityTolerance = 0.1f;
+        private float _similarityTolerance
+        {
+            get => FToolPrefs.GetFloat(nameof(FDeduplicateMeshTool), nameof(_similarityTolerance), 0.1f);
+            set => FToolPrefs.SetFloat(nameof(FDeduplicateMeshTool), nameof(_similarityTolerance), value);
+        }
 
         [SerializeField]
         [PropertyOrder(101)]
@@ -469,29 +473,7 @@ namespace Feeder
             Debug.Log($"<color=cyan>[Deduplicate Mesh] Created manual group with {meshes.Count} mesh(es) from selection.</color>");
         }
 
-        private static List<Mesh> CollectMeshesFromSelection()
-        {
-            var result = new List<Mesh>();
-            var seen = new HashSet<Mesh>();
-            Object[] selection = Selection.objects;
-            if (selection == null) return result;
-
-            for (int i = 0; i < selection.Length; i++)
-            {
-                if (selection[i] is Mesh mesh)
-                {
-                    if (mesh != null && seen.Add(mesh)) result.Add(mesh);
-                }
-                else if (selection[i] is GameObject go)
-                {
-                    foreach (MeshFilter mf in go.GetComponentsInChildren<MeshFilter>(true))
-                        if (mf.sharedMesh != null && seen.Add(mf.sharedMesh)) result.Add(mf.sharedMesh);
-                    foreach (SkinnedMeshRenderer smr in go.GetComponentsInChildren<SkinnedMeshRenderer>(true))
-                        if (smr.sharedMesh != null && seen.Add(smr.sharedMesh)) result.Add(smr.sharedMesh);
-                }
-            }
-            return result;
-        }
+        private static List<Mesh> CollectMeshesFromSelection() => FSelectionUtils.CollectMeshes();
 
         private void RebuildToOriginal()
         {

@@ -1,5 +1,4 @@
 using Sirenix.OdinInspector;
-using Sirenix.Serialization;
 using UnityEngine;
 
 namespace Feeder
@@ -12,13 +11,18 @@ namespace Feeder
 
         [Title("Settings")]
         [LabelText("Overwrite Existing _Col")]
-        [ShowInInspector, OdinSerialize]
-        private bool overwriteExisting = true;
+        [ShowInInspector]
+        private bool overwriteExisting
+        {
+            get => FToolPrefs.GetBool(nameof(FMeshBoxColliderFitterTool), nameof(overwriteExisting), true);
+            set => FToolPrefs.SetBool(nameof(FMeshBoxColliderFitterTool), nameof(overwriteExisting), value);
+        }
 
         [Button(ButtonSizes.Large), GUIColor(0.3f, 0.8f, 1f)]
         public void FitColliders()
         {
             int count = FMeshBoxColliderFitterService.FitAll(TargetPrefabs, overwriteExisting);
+            FSelectionUtils.SelectAndPing(TargetPrefabs);
             Debug.Log($"<color=green>Fitted {count} BoxCollider(s).</color>");
         }
     }

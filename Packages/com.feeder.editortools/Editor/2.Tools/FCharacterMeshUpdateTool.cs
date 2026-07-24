@@ -39,13 +39,27 @@ namespace Feeder
             return "Chuyển SkinnedMeshRenderer / MeshRenderer từ armature cũ sang armature mới, giữ nguyên hierarchy gốc. Kéo GameObject nguồn vào Source, chọn Armature đích và Parent, bấm Preview rồi Transfer.";
         }
 
+        private const string PrefsOwner = nameof(FCharacterMeshUpdateTool);
+
         // ── Source ──────────────────────────────────────────────────────────
 
         [Title("Source")]
         [LabelText("Source GameObjects")]
         [Tooltip("Kéo và thả các GameObject chứa renderer cần chuyển vào đây")]
         [ListDrawerSettings(ShowFoldout = true, DraggableItems = true, ShowIndexLabels = true, NumberOfItemsPerPage = 10)]
-        public GameObject[] sourceGameObjects = new GameObject[0];
+        [ShowInInspector]
+        public List<GameObject> sourceGameObjects
+        {
+            get => FDataPersistenceService.GetOrCreateDataContainer().CharacterMeshSources;
+            set
+            {
+                var c = FDataPersistenceService.GetOrCreateDataContainer();
+                c.CharacterMeshSources.Clear();
+                if (value != null)
+                    c.CharacterMeshSources.AddRange(value);
+                FDataPersistenceService.SaveData(c);
+            }
+        }
 
         // ── Find Options ─────────────────────────────────────────────────────
 
@@ -53,15 +67,30 @@ namespace Feeder
         [Title("Find Options")]
         [LabelText("Collect Mode")]
         [Tooltip("Loại renderer cần thu thập từ Source")]
-        public CollectMode collectMode = CollectMode.Both;
+        [ShowInInspector]
+        public CollectMode collectMode
+        {
+            get => FToolPrefs.GetEnum(PrefsOwner, nameof(collectMode), CollectMode.Both);
+            set => FToolPrefs.SetEnum(PrefsOwner, nameof(collectMode), value);
+        }
 
         [LabelText("Active Scope")]
         [Tooltip("All = lấy cả inactive; Active Only = chỉ GameObject đang active trong hierarchy")]
-        public ActiveScope activeScope = ActiveScope.All;
+        [ShowInInspector]
+        public ActiveScope activeScope
+        {
+            get => FToolPrefs.GetEnum(PrefsOwner, nameof(activeScope), ActiveScope.All);
+            set => FToolPrefs.SetEnum(PrefsOwner, nameof(activeScope), value);
+        }
 
         [LabelText("Duplicate Names")]
         [Tooltip("Exclude Duplicate Names = nhiều renderer cùng tên thì chỉ giữ cái đầu tiên")]
-        public DuplicateNameHandling duplicateNameHandling = DuplicateNameHandling.KeepAll;
+        [ShowInInspector]
+        public DuplicateNameHandling duplicateNameHandling
+        {
+            get => FToolPrefs.GetEnum(PrefsOwner, nameof(duplicateNameHandling), DuplicateNameHandling.KeepAll);
+            set => FToolPrefs.SetEnum(PrefsOwner, nameof(duplicateNameHandling), value);
+        }
 
         // ── Transfer Settings ────────────────────────────────────────────────
 
@@ -70,13 +99,51 @@ namespace Feeder
         [LabelText("New Armature (Hips)")]
         [Tooltip("Root bone của armature đích — thường là bone Hips")]
         [Required]
-        public Transform newArmature;
+        [InlineButton(nameof(UseSelectionAsNewArmature), "Use Selection")]
+        [ShowInInspector]
+        public Transform newArmature
+        {
+            get => FDataPersistenceService.GetOrCreateDataContainer().CharacterMeshNewArmature;
+            set
+            {
+                var c = FDataPersistenceService.GetOrCreateDataContainer();
+                c.CharacterMeshNewArmature = value;
+                FDataPersistenceService.SaveData(c);
+            }
+        }
 
         [PropertySpace(SpaceBefore = 2)]
         [LabelText("New Parent")]
         [Tooltip("Transform sẽ trở thành parent của các renderer sau khi chuyển")]
         [Required]
-        public Transform newParent;
+        [InlineButton(nameof(UseSelectionAsNewParent), "Use Selection")]
+        [ShowInInspector]
+        public Transform newParent
+        {
+            get => FDataPersistenceService.GetOrCreateDataContainer().CharacterMeshNewParent;
+            set
+            {
+                var c = FDataPersistenceService.GetOrCreateDataContainer();
+                c.CharacterMeshNewParent = value;
+                FDataPersistenceService.SaveData(c);
+            }
+        }
+
+        private void UseSelectionAsNewArmature()
+        {
+            if (Selection.activeTransform != null)
+                newArmature = Selection.activeTransform;
+            else
+                Debug.LogWarning("[FCharacterMeshUpdateTool] Chọn một Transform trong Hierarchy trước.");
+        }
+
+        private void UseSelectionAsNewParent()
+        {
+            if (Selection.activeTransform != null)
+                newParent = Selection.activeTransform;
+            else
+                Debug.LogWarning("[FCharacterMeshUpdateTool] Chọn một Transform trong Hierarchy trước.");
+        }
 
         // ── Guide ────────────────────────────────────────────────────────────
 
@@ -124,10 +191,10 @@ namespace Feeder
         [PropertySpace(SpaceBefore = 2)]
         [Button("Transfer Meshes", ButtonSizes.Large)]
         [GUIColor(0.4f, 0.8f, 1f)]
-        [EnableIf("@newArmature != null && newParent != null && sourceGameObjects != null && sourceGameObjects.Length > 0")]
+        [EnableIf("@newArmature != null && newParent != null && sourceGameObjects != null && sourceGameObjects.Count > 0")]
         private void TransferMeshes()
         {
-            if (sourceGameObjects == null || sourceGameObjects.Length == 0)
+            if (sourceGameObjects == null || sourceGameObjects.Count == 0)
                 throw new System.InvalidOperationException("Source GameObjects is empty.");
             if (newArmature == null)
                 throw new System.InvalidOperationException("New Armature is not assigned.");
@@ -213,7 +280,7 @@ namespace Feeder
         [GUIColor(1f, 0.6f, 0.6f)]
         private void ClearAll()
         {
-            sourceGameObjects = new GameObject[0];
+            sourceGameObjects = new List<GameObject>();
             collectMode = CollectMode.Both;
             activeScope = ActiveScope.All;
             duplicateNameHandling = DuplicateNameHandling.KeepAll;

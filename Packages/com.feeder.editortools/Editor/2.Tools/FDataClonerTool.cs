@@ -17,23 +17,58 @@ namespace Feeder
 
         [BoxGroup("Source"), AssetSelector(Paths = "Assets")]
         [OnValueChanged(nameof(ClearSourceField)), LabelText("Source ScriptableObject")]
-        public ScriptableObject SourceSO;
+        [ShowInInspector]
+        public ScriptableObject SourceSO
+        {
+            get => FDataPersistenceService.GetOrCreateDataContainer().DataClonerSourceSO;
+            set
+            {
+                var c = FDataPersistenceService.GetOrCreateDataContainer();
+                c.DataClonerSourceSO = value;
+                FDataPersistenceService.SaveData(c);
+            }
+        }
 
         [BoxGroup("Source"), ValueDropdown(nameof(GetSourceFieldOptions))]
         [ShowIf("@SourceSO != null"), LabelText("Source Field")]
-        public string SourceFieldName;
+        [ShowInInspector]
+        public string SourceFieldName
+        {
+            get => FToolPrefs.GetString(nameof(FDataClonerTool), nameof(SourceFieldName), null);
+            set => FToolPrefs.SetString(nameof(FDataClonerTool), nameof(SourceFieldName), value);
+        }
 
         [BoxGroup("Destination"), AssetSelector(Paths = "Assets")]
         [OnValueChanged(nameof(ClearDestinationField)), LabelText("Destination ScriptableObject")]
-        public ScriptableObject DestinationSO;
+        [ShowInInspector]
+        public ScriptableObject DestinationSO
+        {
+            get => FDataPersistenceService.GetOrCreateDataContainer().DataClonerDestinationSO;
+            set
+            {
+                var c = FDataPersistenceService.GetOrCreateDataContainer();
+                c.DataClonerDestinationSO = value;
+                FDataPersistenceService.SaveData(c);
+            }
+        }
 
         [BoxGroup("Destination"), ValueDropdown(nameof(GetDestinationFieldOptions))]
         [ShowIf("@DestinationSO != null"), LabelText("Destination Field")]
-        public string DestinationFieldName;
+        [ShowInInspector]
+        public string DestinationFieldName
+        {
+            get => FToolPrefs.GetString(nameof(FDataClonerTool), nameof(DestinationFieldName), null);
+            set => FToolPrefs.SetString(nameof(FDataClonerTool), nameof(DestinationFieldName), value);
+        }
 
         [BoxGroup("Settings"), LabelText("Override Existing Values")]
         [Tooltip("Dictionary: bỏ qua key đã có value non-null. List/HashSet: clear trước khi copy.")]
-        public bool OverrideExistingValues = true;
+        [ShowInInspector]
+        public bool OverrideExistingValues
+        {
+            get => FToolPrefs.GetBool(nameof(FDataClonerTool), nameof(OverrideExistingValues), true);
+            set => FToolPrefs.SetBool(nameof(FDataClonerTool), nameof(OverrideExistingValues), value);
+        }
 
         private void ClearSourceField() => SourceFieldName = null;
         private void ClearDestinationField() => DestinationFieldName = null;

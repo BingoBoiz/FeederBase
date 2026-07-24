@@ -32,7 +32,11 @@ namespace Feeder
 
         private readonly Dictionary<MeshPaletteVerdict, bool> sceneVisible = new Dictionary<MeshPaletteVerdict, bool>();
         private readonly Dictionary<MeshPaletteVerdict, bool> tableFilter = new Dictionary<MeshPaletteVerdict, bool>();
-        private bool showSceneLabels = true;
+        private bool showSceneLabels
+        {
+            get => FToolPrefs.GetBool(nameof(FMeshPaletteAnalyzerWindow), nameof(showSceneLabels), true);
+            set => FToolPrefs.SetBool(nameof(FMeshPaletteAnalyzerWindow), nameof(showSceneLabels), value);
+        }
         private bool thresholdsFoldout = true;
 
         private int hoverIndex = -1;
@@ -232,8 +236,32 @@ namespace Feeder
                     GUI.contentColor = prev;
                 }
                 GUILayout.FlexibleSpace();
+                // Handoff: chọn các renderer đang hiển thị để đưa sang Texture Modifier / Mesh Modifier
+                // qua nút Use Selection của các tool đó.
+                if (GUILayout.Button("Select Shown In Hierarchy", EditorStyles.miniButton))
+                    SelectShownInHierarchy();
                 showSceneLabels = GUILayout.Toggle(showSceneLabels, "Nhãn Scene", EditorStyles.miniButton);
             }
+        }
+
+        private void SelectShownInHierarchy()
+        {
+            var seen = new HashSet<GameObject>();
+            var picked = new List<UnityEngine.Object>();
+            for (int i = 0; i < session.Results.Count; i++)
+            {
+                MeshPaletteClassification c = session.Results[i];
+                if (tableFilter.TryGetValue(c.verdict, out bool show) && !show) continue;
+                if (c.renderer != null && seen.Add(c.renderer.gameObject))
+                    picked.Add(c.renderer.gameObject);
+            }
+            if (picked.Count == 0)
+            {
+                Debug.LogWarning("[Mesh Palette Analyzer] Không có renderer nào đang hiển thị theo filter.");
+                return;
+            }
+            Selection.objects = picked.ToArray();
+            EditorGUIUtility.PingObject(picked[0]);
         }
 
         private void DrawRow(int index, MeshPaletteClassification c, ref int newHover)

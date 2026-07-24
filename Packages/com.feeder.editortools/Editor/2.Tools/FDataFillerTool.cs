@@ -81,16 +81,24 @@ namespace Feeder
         [PropertyOrder(-870)]
         [PropertySpace(SpaceBefore = 6)]
         [LabelText("Match Threshold (0–1)")]
-        [Range(0f, 1f)]
-        [SerializeField]
-        private float _matchThreshold = 0.8f;
+        [PropertyRange(0f, 1f)]
+        [ShowInInspector]
+        private float _matchThreshold
+        {
+            get => FToolPrefs.GetFloat(nameof(FDataFillerTool), nameof(_matchThreshold), 0.8f);
+            set => FToolPrefs.SetFloat(nameof(FDataFillerTool), nameof(_matchThreshold), value);
+        }
 
         [PropertyOrder(-860)]
         [PropertySpace(SpaceBefore = 6)]
         [LabelText("Override Existing Values")]
         [Tooltip("If true, will override existing sprite values. If false, will skip enum values that already have sprites.")]
         [ShowInInspector]
-        public bool OverrideExistingValues = true;
+        public bool OverrideExistingValues
+        {
+            get => FToolPrefs.GetBool(nameof(FDataFillerTool), nameof(OverrideExistingValues), true);
+            set => FToolPrefs.SetBool(nameof(FDataFillerTool), nameof(OverrideExistingValues), value);
+        }
 
         [PropertyOrder(-855)]
         [PropertySpace(SpaceBefore = 6)]

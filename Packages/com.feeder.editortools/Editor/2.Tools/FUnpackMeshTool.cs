@@ -148,7 +148,19 @@ namespace Feeder
             if (includesSkinned)
                 RebuildAvatarPhase();
 
+            UnityEngine.Object firstCreated = FirstNonNull(meshMap.Values)
+                ?? FirstNonNull(materialMap.Values)
+                ?? FirstNonNull(textureMap.Values);
+            FSelectionUtils.Ping(firstCreated);
             Debug.Log($"<color=green>[FUnpackMeshTool] Done. {entries.Count} renderer(s) unpacked.</color>");
+        }
+
+        private static UnityEngine.Object FirstNonNull<T>(IEnumerable<T> items) where T : UnityEngine.Object
+        {
+            foreach (T item in items)
+                if (item != null)
+                    return item;
+            return null;
         }
 
         // ══════════════════════════════════════════════════════════════════

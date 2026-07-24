@@ -30,8 +30,13 @@ namespace Feeder
         [PropertyOrder(-790)]
         [LabelText("Mode")]
         [ShowInInspector]
-        [SerializeField]
-        private TransferMode _mode = TransferMode.Move;
+        private TransferMode Mode
+        {
+            get => FToolPrefs.GetEnum(nameof(FAssetOrganizerTool), nameof(Mode), TransferMode.Move);
+            set => FToolPrefs.SetEnum(nameof(FAssetOrganizerTool), nameof(Mode), value);
+        }
+
+        [System.NonSerialized] private FAssetRevertService.RevertOperation _lastMoveOp;
 
         [PropertyOrder(0)]
         [Button("Organize Assets", ButtonSizes.Large)]
@@ -59,6 +64,7 @@ namespace Feeder
             }
 
             int successCount = 0;
+            var op = FAssetRevertService.Begin("Organize Assets (Move)");
 
             AssetDatabase.StartAssetEditing();
             try
@@ -76,7 +82,7 @@ namespace Feeder
 
                     if (sourcePath == destPath) continue;
 
-                    if (_mode == TransferMode.Copy)
+                    if (Mode == TransferMode.Copy)
                     {
                         if (AssetDatabase.CopyAsset(sourcePath, destPath))
                             successCount++;
@@ -87,7 +93,10 @@ namespace Feeder
                     {
                         string error = AssetDatabase.MoveAsset(sourcePath, destPath);
                         if (string.IsNullOrEmpty(error))
+                        {
                             successCount++;
+                            FAssetRevertService.RecordMove(op, sourcePath, destPath);
+                        }
                         else
                             Debug.LogWarning($"[Asset Organizer] Move thất bại '{fileName}': {error}");
                     }
@@ -100,7 +109,23 @@ namespace Feeder
                 AssetDatabase.Refresh();
             }
 
-            Debug.Log($"<color=cyan>[Asset Organizer] {_mode} {successCount}/{assets.Count} asset → '{destFolder}'</color>");
+            if (Mode == TransferMode.Move)
+                _lastMoveOp = op.IsEmpty ? null : op;
+
+            Debug.Log($"<color=cyan>[Asset Organizer] {Mode} {successCount}/{assets.Count} asset → '{destFolder}'</color>");
+            FSelectionUtils.SelectAndPing(assets);
+            FSelectionUtils.Ping(AssetDatabase.LoadAssetAtPath<Object>(destFolder));
+        }
+
+        private bool HasRevertableMove => _lastMoveOp != null && !_lastMoveOp.IsEmpty;
+
+        [PropertyOrder(1)]
+        [Button("Revert Last Move", ButtonSizes.Medium), EnableIf(nameof(HasRevertableMove))]
+        private void RevertLastMove()
+        {
+            if (FAssetRevertService.Revert(_lastMoveOp, out string report))
+                _lastMoveOp = null;
+            Debug.Log(report);
         }
     }
 }
