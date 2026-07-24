@@ -25,6 +25,8 @@ namespace Feeder
         [SerializeField] private Transform characterMeshNewArmature;
         [SerializeField] private Transform characterMeshNewParent;
         [SerializeField] private List<Object> fbxUnpackSources = new List<Object>();
+        [SerializeField] private Object dataFillerTarget;
+        [SerializeField] private Component dataFillerComponent;
 
         public List<GameObject> TargetPrefabs => GetOrInit(ref targetPrefabs);
         public List<Object> TargetAssets => GetOrInit(ref targetAssets);
@@ -39,6 +41,8 @@ namespace Feeder
         public Transform CharacterMeshNewArmature { get => characterMeshNewArmature; set => characterMeshNewArmature = value; }
         public Transform CharacterMeshNewParent { get => characterMeshNewParent; set => characterMeshNewParent = value; }
         public List<Object> FbxUnpackSources => GetOrInit(ref fbxUnpackSources);
+        public Object DataFillerTarget { get => dataFillerTarget; set => dataFillerTarget = value; }
+        public Component DataFillerComponent { get => dataFillerComponent; set => dataFillerComponent = value; }
 
         /// <summary>Index in TargetsMesh used as "compare target" in Deduplicate Mesh Tool.</summary>
         public int TargetsMeshCompareIndex { get => targetsMeshCompareIndex; set => targetsMeshCompareIndex = Mathf.Clamp(value, 0, Mathf.Max(0, TargetsMesh.Count - 1)); }

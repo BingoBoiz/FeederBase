@@ -166,6 +166,8 @@ namespace Feeder
             SerializedObject so = new SerializedObject(previewComponent);
             so.Update();
 
+            DrawComponentEnabledHeader(so, previewComponent);
+
             SerializedProperty prop = so.GetIterator();
             bool enterChildren = true;
 
@@ -173,6 +175,7 @@ namespace Feeder
             {
                 enterChildren = false;
                 if (prop.propertyPath == "m_Script") continue;
+                if (prop.propertyPath == "m_Enabled") continue;
 
                 bool wasModified = modifiedPropertyPaths.Contains(prop.propertyPath);
 
@@ -201,6 +204,41 @@ namespace Feeder
             }
 
             so.ApplyModifiedProperties();
+        }
+
+        private void DrawComponentEnabledHeader(SerializedObject so, Component previewComponent)
+        {
+            SerializedProperty enabledProp = so.FindProperty("m_Enabled");
+
+            EditorGUILayout.BeginHorizontal();
+
+            Color originalColor = GUI.color;
+            if (modifiedPropertyPaths.Contains("m_Enabled"))
+            {
+                GUI.color = Color.cyan;
+                EditorGUILayout.LabelField("●", GUILayout.Width(14));
+                GUI.color = originalColor;
+            }
+            else
+            {
+                GUILayout.Space(18);
+            }
+
+            if (enabledProp != null)
+            {
+                EditorGUI.BeginChangeCheck();
+                EditorGUILayout.PropertyField(enabledProp, GUIContent.none, GUILayout.Width(16));
+                if (EditorGUI.EndChangeCheck())
+                {
+                    modifiedPropertyPaths.Add("m_Enabled");
+                }
+            }
+
+            Texture icon = EditorGUIUtility.ObjectContent(previewComponent, ComponentType).image;
+            GUILayout.Label(new GUIContent(ObjectNames.NicifyVariableName(ComponentType.Name), icon), EditorStyles.boldLabel, GUILayout.Height(EditorGUIUtility.singleLineHeight));
+
+            EditorGUILayout.EndHorizontal();
+            EditorGUILayout.Space(2);
         }
 
         [TabGroup("Tabs", "Modify")]

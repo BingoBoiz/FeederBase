@@ -46,6 +46,12 @@ namespace Feeder
 
         public static Transform ResolveTargetByPath(Transform root, string path)
         {
+            return TryResolveTargetByPath(root, path)
+                   ?? throw new InvalidOperationException($"path '{path}' not found.");
+        }
+
+        public static Transform TryResolveTargetByPath(Transform root, string path)
+        {
             if (root == null)
                 throw new InvalidOperationException("root is null.");
             if (string.IsNullOrEmpty(path))
@@ -56,9 +62,9 @@ namespace Feeder
             for (int i = 0; i < parts.Length; i++)
             {
                 if (string.IsNullOrEmpty(parts[i])) continue;
-                current = current?.Find(parts[i]);
+                current = current.Find(parts[i]);
                 if (current == null)
-                    throw new InvalidOperationException($"path '{path}' not found.");
+                    return null;
             }
 
             return current;

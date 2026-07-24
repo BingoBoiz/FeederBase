@@ -78,6 +78,17 @@ namespace Feeder
             return result;
         }
 
+        /// <summary>First selected object (asset or scene object), or null.</summary>
+        public static Object FirstObject()
+        {
+            Object[] selection = Selection.objects;
+            if (selection == null) return null;
+            foreach (Object obj in selection)
+                if (obj != null)
+                    return obj;
+            return null;
+        }
+
         /// <summary>First selected object that is a ScriptableObject, or null.</summary>
         public static ScriptableObject FirstScriptableObject()
         {
