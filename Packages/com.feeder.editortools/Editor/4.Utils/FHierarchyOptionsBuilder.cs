@@ -453,7 +453,6 @@ namespace Feeder
             foreach (var node in nodes)
             {
                 string valuePath = valuePrefix.Length == 0 ? node.SegmentKey : valuePrefix + "/" + node.SegmentKey;
-                string displayPath = displayPrefix.Length == 0 ? BuildDisplaySegment(node) : displayPrefix + "/" + BuildDisplaySegment(node);
 
                 var concrete = new string[concretePrefix.Length];
                 foreach (var (targetIdx, treeNode) in node.Contributors)
@@ -466,15 +465,23 @@ namespace Feeder
 
                 int presenceCount = node.Contributors.Count;
                 bool partial = presenceCount < prefabCount;
-                // no '/' anywhere in the marker: Odin splits dropdown tree levels on '/'
-                string label = partial ? $"{displayPath} [{presenceCount} of {prefabCount}]" : displayPath;
+
+                // the [k of N] marker must be part of the segment used as the children's prefix:
+                // Odin splits dropdown tree levels on '/' and only merges a selectable item with
+                // its folder when both strings match exactly — a suffix only on the item's own
+                // label would split the node into a leaf row plus a separate folder row.
+                // (Also no '/' anywhere in the marker, for the same reason.)
+                string segment = BuildDisplaySegment(node);
+                if (partial)
+                    segment += $" [{presenceCount} of {prefabCount}]";
+                string displayPath = displayPrefix.Length == 0 ? segment : displayPrefix + "/" + segment;
 
                 if (node.IsVariant)
                     hasVariants = true;
                 if (partial)
                     partialPaths.Add(valuePath);
 
-                options.Add(new ValueDropdownItem<string>(label, valuePath));
+                options.Add(new ValueDropdownItem<string>(displayPath, valuePath));
                 concreteByMergedPath[valuePath] = concrete;
 
                 Flatten(node.Children, valuePath, displayPath, concrete, prefabCount, options, partialPaths, concreteByMergedPath, ref hasVariants);
