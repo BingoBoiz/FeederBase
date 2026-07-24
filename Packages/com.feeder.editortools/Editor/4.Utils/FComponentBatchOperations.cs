@@ -137,7 +137,8 @@ namespace Feeder
         public static int AddComponentToTargets(
             Type componentType,
             string hierarchyPath,
-            IReadOnlyList<GameObject> targetPrefabs)
+            IReadOnlyList<GameObject> targetPrefabs,
+            IReadOnlyList<string> perTargetPaths = null)
         {
             if (componentType == null)
                 throw new InvalidOperationException("component type is null.");
@@ -149,6 +150,8 @@ namespace Feeder
                 throw new InvalidOperationException("selected hierarchy path is empty.");
             if (!(targetPrefabs?.Count > 0))
                 throw new InvalidOperationException("target objects is empty.");
+            if (perTargetPaths != null && perTargetPaths.Count != targetPrefabs.Count)
+                throw new InvalidOperationException("per-target paths count does not match targets count.");
 
             int addedCount = 0;
 
@@ -161,9 +164,22 @@ namespace Feeder
                     continue;
                 }
 
+                string pathForTarget = perTargetPaths != null ? perTargetPaths[i] : hierarchyPath;
+                if (string.IsNullOrEmpty(pathForTarget))
+                {
+                    Debug.LogWarning($"[FComponentBatchOperations] '{go.name}' không có node '{hierarchyPath}', bỏ qua.");
+                    continue;
+                }
+
                 if (go.scene.IsValid())
                 {
-                    var target = FHierarchyPathResolver.ResolveTargetByPath(go.transform, hierarchyPath);
+                    var target = FHierarchyPathResolver.TryResolveTargetByPath(go.transform, pathForTarget);
+                    if (target == null)
+                    {
+                        Debug.LogWarning($"[FComponentBatchOperations] '{go.name}' không có node '{pathForTarget}', bỏ qua.");
+                        continue;
+                    }
+
                     if (target.GetComponent(componentType) == null)
                     {
                         Undo.AddComponent(target.gameObject, componentType);
@@ -182,8 +198,12 @@ namespace Feeder
                     var prefabRoot = PrefabUtility.LoadPrefabContents(path);
                     try
                     {
-                        var target = FHierarchyPathResolver.ResolveTargetByPath(prefabRoot.transform, hierarchyPath);
-                        if (target.GetComponent(componentType) == null)
+                        var target = FHierarchyPathResolver.TryResolveTargetByPath(prefabRoot.transform, pathForTarget);
+                        if (target == null)
+                        {
+                            Debug.LogWarning($"[FComponentBatchOperations] '{go.name}' không có node '{pathForTarget}', bỏ qua.");
+                        }
+                        else if (target.GetComponent(componentType) == null)
                         {
                             target.gameObject.AddComponent(componentType);
                             addedCount++;

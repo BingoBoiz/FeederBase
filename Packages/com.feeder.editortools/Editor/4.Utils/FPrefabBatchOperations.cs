@@ -22,7 +22,8 @@ namespace Feeder
             GameObject previewNode,
             string hierarchyPath,
             IReadOnlyCollection<string> modifiedPropertyPaths,
-            IReadOnlyList<GameObject> targetPrefabs)
+            IReadOnlyList<GameObject> targetPrefabs,
+            IReadOnlyList<string> perTargetPaths = null)
         {
             if (previewNode == null)
                 throw new InvalidOperationException("preview node is null.");
@@ -32,6 +33,8 @@ namespace Feeder
                 throw new InvalidOperationException("no modified properties.");
             if (!(targetPrefabs?.Count > 0))
                 throw new InvalidOperationException("target objects is empty.");
+            if (perTargetPaths != null && perTargetPaths.Count != targetPrefabs.Count)
+                throw new InvalidOperationException("per-target paths count does not match targets count.");
 
             int appliedCount = 0;
 
@@ -44,12 +47,19 @@ namespace Feeder
                     continue;
                 }
 
+                string pathForTarget = perTargetPaths != null ? perTargetPaths[i] : hierarchyPath;
+                if (string.IsNullOrEmpty(pathForTarget))
+                {
+                    Debug.LogWarning($"[FPrefabBatchOperations] '{go.name}' không có node '{hierarchyPath}', bỏ qua.");
+                    continue;
+                }
+
                 if (go.scene.IsValid())
                 {
-                    Transform node = FHierarchyPathResolver.TryResolveTargetByPath(go.transform, hierarchyPath);
+                    Transform node = FHierarchyPathResolver.TryResolveTargetByPath(go.transform, pathForTarget);
                     if (node == null)
                     {
-                        Debug.LogWarning($"[FPrefabBatchOperations] '{go.name}' không có node '{hierarchyPath}', bỏ qua.");
+                        Debug.LogWarning($"[FPrefabBatchOperations] '{go.name}' không có node '{pathForTarget}', bỏ qua.");
                         continue;
                     }
 
@@ -69,10 +79,10 @@ namespace Feeder
                     GameObject prefabRoot = PrefabUtility.LoadPrefabContents(path);
                     try
                     {
-                        Transform node = FHierarchyPathResolver.TryResolveTargetByPath(prefabRoot.transform, hierarchyPath);
+                        Transform node = FHierarchyPathResolver.TryResolveTargetByPath(prefabRoot.transform, pathForTarget);
                         if (node == null)
                         {
-                            Debug.LogWarning($"[FPrefabBatchOperations] '{go.name}' không có node '{hierarchyPath}', bỏ qua.");
+                            Debug.LogWarning($"[FPrefabBatchOperations] '{go.name}' không có node '{pathForTarget}', bỏ qua.");
                         }
                         else
                         {
@@ -93,12 +103,14 @@ namespace Feeder
             return appliedCount;
         }
 
-        public static int DeleteNodeFromTargets(string hierarchyPath, IReadOnlyList<GameObject> targetPrefabs)
+        public static int DeleteNodeFromTargets(string hierarchyPath, IReadOnlyList<GameObject> targetPrefabs, IReadOnlyList<string> perTargetPaths = null)
         {
             if (string.IsNullOrEmpty(hierarchyPath))
                 throw new InvalidOperationException("selected hierarchy path is empty.");
             if (!(targetPrefabs?.Count > 0))
                 throw new InvalidOperationException("target objects is empty.");
+            if (perTargetPaths != null && perTargetPaths.Count != targetPrefabs.Count)
+                throw new InvalidOperationException("per-target paths count does not match targets count.");
 
             int deletedCount = 0;
 
@@ -111,18 +123,25 @@ namespace Feeder
                     continue;
                 }
 
+                string pathForTarget = perTargetPaths != null ? perTargetPaths[i] : hierarchyPath;
+                if (string.IsNullOrEmpty(pathForTarget))
+                {
+                    Debug.LogWarning($"[FPrefabBatchOperations] '{go.name}' không có node '{hierarchyPath}', bỏ qua.");
+                    continue;
+                }
+
                 if (go.scene.IsValid())
                 {
-                    Transform node = FHierarchyPathResolver.TryResolveTargetByPath(go.transform, hierarchyPath);
+                    Transform node = FHierarchyPathResolver.TryResolveTargetByPath(go.transform, pathForTarget);
                     if (node == null)
                     {
-                        Debug.LogWarning($"[FPrefabBatchOperations] '{go.name}' không có node '{hierarchyPath}', bỏ qua.");
+                        Debug.LogWarning($"[FPrefabBatchOperations] '{go.name}' không có node '{pathForTarget}', bỏ qua.");
                         continue;
                     }
 
                     if (PrefabUtility.IsPartOfPrefabInstance(node.gameObject))
                     {
-                        Debug.LogWarning($"[FPrefabBatchOperations] '{go.name}/{hierarchyPath}' là child của prefab instance trong scene, không thể xóa — hãy xóa trong prefab asset.");
+                        Debug.LogWarning($"[FPrefabBatchOperations] '{go.name}/{pathForTarget}' là child của prefab instance trong scene, không thể xóa — hãy xóa trong prefab asset.");
                         continue;
                     }
 
@@ -143,10 +162,10 @@ namespace Feeder
                     GameObject prefabRoot = PrefabUtility.LoadPrefabContents(path);
                     try
                     {
-                        Transform node = FHierarchyPathResolver.TryResolveTargetByPath(prefabRoot.transform, hierarchyPath);
+                        Transform node = FHierarchyPathResolver.TryResolveTargetByPath(prefabRoot.transform, pathForTarget);
                         if (node == null)
                         {
-                            Debug.LogWarning($"[FPrefabBatchOperations] '{go.name}' không có node '{hierarchyPath}', bỏ qua.");
+                            Debug.LogWarning($"[FPrefabBatchOperations] '{go.name}' không có node '{pathForTarget}', bỏ qua.");
                         }
                         else
                         {

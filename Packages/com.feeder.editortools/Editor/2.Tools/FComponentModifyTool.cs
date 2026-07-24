@@ -49,20 +49,20 @@ namespace Feeder
                 return;
             }
 
-            if (hierarchyOptions.Count == 0)
+            if (!(cachedHierarchyResult?.Options.Count > 0))
             {
                 EditorGUILayout.HelpBox("No hierarchy data for current targets.", MessageType.Info);
                 return;
             }
 
-            if (cachedPrefabCount < 2)
+            if (cachedHierarchyResult.HasVariants)
             {
-                EditorGUILayout.HelpBox("Add at least two prefabs to show conflicts.", MessageType.Info);
+                EditorGUILayout.HelpBox("Entries like \"82_Pet_*\" or <A | B | …> merge similarly-structured nodes with different names across targets; operations resolve each target's own node.", MessageType.Info);
             }
 
-            if (conflictPaths.Count > 0)
+            if (cachedHierarchyResult.PartialPaths.Count > 0)
             {
-                EditorGUILayout.HelpBox("Items marked [Conflict] differ between prefabs.", MessageType.Warning);
+                EditorGUILayout.HelpBox("Items marked [k of N] exist in only some targets; missing targets are skipped.", MessageType.Warning);
             }
         }
 
@@ -71,7 +71,11 @@ namespace Feeder
         public void AddComponent()
         {
             Type selectedType = ComponentType;
-            int addedCount = FComponentBatchOperations.AddComponentToTargets(selectedType, SelectedHierarchyPath, TargetPrefabs);
+            int addedCount = FComponentBatchOperations.AddComponentToTargets(
+                selectedType,
+                SelectedHierarchyPath,
+                TargetPrefabs,
+                cachedHierarchyResult?.GetConcretePathsOrNull(SelectedHierarchyPath));
             Debug.Log($"<color=green>Added {addedCount} component(s) of type {selectedType.Name}</color>");
             RebuildComponentInstanceCache();
         }
@@ -378,13 +382,12 @@ namespace Feeder
             return FComponentTypeOptionsProvider.GetComponentTypeOptions();
         }
 
-        private List<ValueDropdownItem<string>> hierarchyOptions = new List<ValueDropdownItem<string>>();
-        private HashSet<string> conflictPaths = new HashSet<string>();
-        private int cachedPrefabCount;
+        private HierarchyOptionsResult cachedHierarchyResult;
+        private static readonly List<ValueDropdownItem<string>> emptyHierarchyOptions = new List<ValueDropdownItem<string>>();
 
         private IEnumerable<ValueDropdownItem<string>> GetHierarchyOptions()
         {
-            return hierarchyOptions;
+            return cachedHierarchyResult?.Options ?? emptyHierarchyOptions;
         }
 
         protected override void OnTargetPrefabsChanged()
@@ -402,18 +405,9 @@ namespace Feeder
 
         private void RebuildHierarchyOptionsIfReady()
         {
-            if (componentType == null || !(TargetPrefabs?.Count > 0))
-            {
-                hierarchyOptions.Clear();
-                conflictPaths.Clear();
-                cachedPrefabCount = 0;
-                return;
-            }
-
-            HierarchyOptionsResult result = FHierarchyOptionsBuilder.Build(TargetPrefabs);
-            hierarchyOptions = result.Options;
-            conflictPaths = result.ConflictPaths;
-            cachedPrefabCount = result.PrefabCount;
+            cachedHierarchyResult = componentType != null && TargetPrefabs?.Count > 0
+                ? FHierarchyOptionsBuilder.Build(TargetPrefabs)
+                : null;
         }
 
         private void RebuildComponentInstanceCache()
