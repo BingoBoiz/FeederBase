@@ -17,10 +17,6 @@ namespace Feeder
         public bool AnyWritten => WrittenCount > 0;
     }
 
-    /// <summary>
-    /// Ghi các thay đổi text ra file .cs trong Assets/. Đây là nơi DUY NHẤT trong luồng
-    /// Update Enum / Generate Script thực sự chạm vào đĩa.
-    /// </summary>
     public static class FeederChangeWriter
     {
         public static bool CanWriteNow(out string reason)
@@ -71,8 +67,6 @@ namespace Feeder
                     continue;
                 }
 
-                // Nội dung trên đĩa đã đổi từ lúc xem trước (recompile nền, người khác sửa...).
-                // Đây là thứ duy nhất chặn việc ghi đè lên một bản khác với bản đã review.
                 string current = FeederEnumSourceEditor.TryReadText(file.AssetPath, out bool _);
                 if (file.IsNewFile)
                 {
@@ -120,8 +114,6 @@ namespace Feeder
                     FeederFileChange file = ready[i];
                     try
                     {
-                        // File.WriteAllText chứ không StreamWriter.WriteLine: cái sau nối thêm
-                        // Environment.NewLine nên ép CRLF và làm diff của file LF phình ra cả file.
                         File.WriteAllText(Path.GetFullPath(file.AssetPath), file.NewText,
                             new UTF8Encoding(file.OriginalHadBom));
                         report.WrittenCount++;

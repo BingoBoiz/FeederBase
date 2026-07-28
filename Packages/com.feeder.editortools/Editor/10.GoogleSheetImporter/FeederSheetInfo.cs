@@ -18,6 +18,10 @@ namespace Feeder
         [Sirenix.OdinInspector.FolderPath(ParentFolder = "Assets", RequireExistingPath = true)]
         public string ScriptFolder;
 
+        public string Namespace;
+
+        public MonoScript EnumScript;
+
         [Sirenix.OdinInspector.FolderPath(ParentFolder = "Assets", RequireExistingPath = true)]
         public string AssetFolder;
 

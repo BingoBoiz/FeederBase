@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 using NabaGame.Core.Runtime.Extensions;
 using UnityEditor;
 using UnityEngine;
@@ -29,9 +30,10 @@ public class {0}Data : ScriptableObject
 
         private static readonly string FieldTemplate = "\tpublic {0} {1};";
 
-        public static void GenerateClass(string className, List<string> rawFields, string scriptPath)
+        public static void GenerateClass(string className, List<string> rawFields, string scriptPath,
+            string sheetNamespace)
         {
-            string classData = BuildScriptText(className, rawFields, out List<string> skippedColumns);
+            string classData = BuildScriptText(className, rawFields, sheetNamespace, out List<string> skippedColumns);
             if (classData == null)
             {
                 EditorUtility.DisplayDialog("Generate Script",
@@ -57,11 +59,8 @@ public class {0}Data : ScriptableObject
             Debug.Log($"Success !! {className} scripts is generated !!");
         }
 
-        /// <summary>
-        /// Sinh nội dung file .cs mà KHÔNG chạm đĩa và KHÔNG hiện dialog — cảnh báo trả qua
-        /// <paramref name="skippedColumns"/> để cửa sổ xem trước hiện inline thay vì bắn dialog giữa vòng lặp.
-        /// </summary>
-        public static string BuildScriptText(string className, List<string> rawFields, out List<string> skippedColumns)
+        public static string BuildScriptText(string className, List<string> rawFields, string sheetNamespace,
+            out List<string> skippedColumns)
         {
             skippedColumns = new List<string>();
             if (className.IsNullOrWhitespace())
@@ -82,7 +81,6 @@ public class {0}Data : ScriptableObject
                 string rawField = rawFields[i];
                 if (rawField.IsNullOrWhitespace())
                 {
-                    // Chỉ bỏ đúng cột này — trước đây 'break' làm mất luôn mọi field phía sau.
                     skippedColumns.Add($"  • Cột {i + 1}: header rỗng");
                     continue;
                 }
@@ -106,14 +104,18 @@ public class {0}Data : ScriptableObject
                         string typeTag = fieldType.Trim().ToLower();
                         if (typeTag == "s")
                         {
-                            if (FeederEnumUtils.GetEnumTypeByName(typeToken) == null)
+                            FeederEnumResolveStatus status = FeederEnumUtils.TryResolveEnumType(
+                                typeToken, sheetNamespace, out Type enumType, out List<Type> ambiguous);
+
+                            if (status == FeederEnumResolveStatus.Resolved)
                             {
-                                skippedColumns.Add($"  • Cột {i + 1} '{rawField}': không tìm thấy enum {typeToken} → tạm sinh ra string");
+                                resolvedTypeName = true;
+                                fieldType = ToCSharpTypeName(enumType);
                             }
                             else
                             {
-                                resolvedTypeName = true;
-                                fieldType = typeToken;
+                                skippedColumns.Add(DescribeUnresolvedEnum(i, rawField, typeToken, sheetNamespace,
+                                    status, ambiguous));
                             }
                         }
                         else if (typeTag == "pref")
@@ -127,7 +129,7 @@ public class {0}Data : ScriptableObject
                             else
                             {
                                 resolvedTypeName = true;
-                                fieldType = componentType.FullName;
+                                fieldType = ToCSharpTypeName(componentType);
                             }
                         }
                     }
@@ -140,7 +142,6 @@ public class {0}Data : ScriptableObject
 
                 if (fieldType.IsNullOrWhitespace())
                 {
-                    // Prefix lạ -> GetTypeName trả rỗng -> trước đây sinh ra "public  Name;" làm script không compile được.
                     skippedColumns.Add($"  • Cột {i + 1} '{rawField}': prefix không có trong bảng kiểu");
                     continue;
                 }
@@ -150,11 +151,69 @@ public class {0}Data : ScriptableObject
 
             string listField = $"{className[0].ToString().ToLower()}{className.Substring(1)}s";
 
-            // Nối newline cuối để khớp hành vi StreamWriter.WriteLine trước đây; thiếu nó thì
-            // diff của mọi file đã generate sẽ báo đổi dòng cuối một cách vô cớ.
-            return ScriptTemplate.Replace("{0}", className)
+            string generated = ScriptTemplate.Replace("{0}", className)
                 .Replace("{1}", fieldBuilder.ToString())
                 .Replace("{2}", listField) + Environment.NewLine;
+
+            return sheetNamespace.IsNullOrWhitespace()
+                ? generated
+                : WrapInNamespace(generated, sheetNamespace.Trim());
+        }
+
+        private static string ToCSharpTypeName(Type type)
+        {
+            return type.FullName?.Replace('+', '.') ?? type.Name;
+        }
+
+        private static string DescribeUnresolvedEnum(int columnIndex, string rawField, string typeToken,
+            string sheetNamespace, FeederEnumResolveStatus status, List<Type> ambiguous)
+        {
+            string head = $"  • Cột {columnIndex + 1} '{rawField}': ";
+            if (status == FeederEnumResolveStatus.Ambiguous)
+            {
+                List<string> names = ambiguous.ConvertAll(x => x.FullName?.Replace('+', '.'));
+                return head + $"'{typeToken}' trùng tên ở nhiều nơi ({string.Join(", ", names)}) → tạm sinh ra string. " +
+                       "Ghi tên đầy đủ trong header sheet.";
+            }
+
+            List<Type> elsewhere = FeederEnumUtils.FindEnumsOutsideScope(typeToken, sheetNamespace);
+            if (elsewhere.Count > 0)
+            {
+                List<string> names = elsewhere.ConvertAll(x => x.FullName?.Replace('+', '.'));
+                return head + $"không tìm thấy enum '{typeToken}' ở {FeederEnumUtils.DescribeScope(sheetNamespace)} " +
+                       $"→ tạm sinh ra string. Nó đang nằm ở: {string.Join(", ", names)} — đặt Namespace của sheet " +
+                       $"cho khớp, hoặc ghi tên đầy đủ trong header (ví dụ {rawField.Replace(typeToken, names[0])}).";
+            }
+
+            return head + $"không tìm thấy enum '{typeToken}' ở {FeederEnumUtils.DescribeScope(sheetNamespace)} " +
+                   "→ tạm sinh ra string. Bấm Update Enum trước để tạo nó.";
+        }
+
+        private static string WrapInNamespace(string generated, string ns)
+        {
+            string newline = FeederEnumSourceEditor.DetectNewline(generated);
+
+            int split = 0;
+            while (split < generated.Length)
+            {
+                int lineEnd = generated.IndexOf('\n', split);
+                int nextStart = lineEnd < 0 ? generated.Length : lineEnd + 1;
+                string line = generated.Substring(split, (lineEnd < 0 ? generated.Length : lineEnd) - split);
+                if (!line.TrimStart().StartsWith("using ", StringComparison.Ordinal))
+                {
+                    break;
+                }
+
+                split = nextStart;
+            }
+
+            string usingBlock = generated.Substring(0, split);
+            string body = generated.Substring(split).TrimStart('\r', '\n').TrimEnd();
+
+            string indented = Regex.Replace(body, "^(?=[^\r\n])", "    ", RegexOptions.Multiline);
+
+            return usingBlock + newline + "namespace " + ns + newline + "{" + newline +
+                   indented + newline + "}" + newline;
         }
 
         public static void WriteScript(string filePath, string classData)
@@ -162,8 +221,6 @@ public class {0}Data : ScriptableObject
             File.WriteAllText(filePath, classData, new UTF8Encoding(false));
         }
 
-        // Tách header 'prefix_FieldName' hoặc 'prefix_FieldName:TypeToken' ra đúng tên field C# đã sinh.
-        // FeederDataAssetGenerator dùng lại hàm này để map cột theo TÊN thay vì theo chỉ số cột.
         public static string GetFieldNameFromHeader(string rawField)
         {
             if (rawField.IsNullOrWhitespace())

@@ -15,7 +15,6 @@ namespace Feeder
         public string AssetPath;
         public string Text;
 
-        // Bản đã che comment/string, CÙNG ĐỘ DÀI với Text nên offset dùng chung được.
         public string Masked;
         public bool HadBom;
         public string Newline;
@@ -23,17 +22,8 @@ namespace Feeder
         public int CloseBraceIndex;
     }
 
-    /// <summary>
-    /// Đọc/sửa nguồn .cs của enum: che comment-string, tìm khai báo, khớp ngoặc, chèn member mới.
-    /// Mọi thao tác đều thuần chuỗi — không hàm nào ở đây ghi ra đĩa.
-    /// </summary>
     public static class FeederEnumSourceEditor
     {
-        /// <summary>
-        /// Trả về chuỗi CÙNG ĐỘ DÀI với source: ký tự trong comment/string bị thay bằng ' ',
-        /// riêng '\r' '\n' giữ nguyên. Nhờ vậy offset và số dòng khớp 1:1 với bản gốc,
-        /// nên "// enum Foo {" hay "\"enum Foo {\"" không thể tạo match giả và không phá phép đếm ngoặc.
-        /// </summary>
         public static string MaskCommentsAndStrings(string source)
         {
             if (string.IsNullOrEmpty(source))
@@ -79,7 +69,6 @@ namespace Feeder
                 }
                 else if (c == '$' && i + 2 < n && source[i + 1] == '@' && source[i + 2] == '"')
                 {
-                    // $@"..." — che dấu '$' rồi để vòng sau xử lý như verbatim string.
                     result[i] = ' ';
                     i++;
                 }
@@ -131,7 +120,6 @@ namespace Feeder
                             break;
                         }
 
-                        // Chuỗi không đóng trước khi xuống dòng: dừng lại, đừng che cả phần còn lại của file.
                         if (source[i] == '\n' || source[i] == '\r')
                         {
                             break;
@@ -157,8 +145,6 @@ namespace Feeder
                 result[index] = ' ';
             }
         }
-
-        // ---------- tìm khai báo enum ----------
 
         public static bool TryLocate(Type enumType, out FeederEnumLocation location, out string error)
         {
@@ -289,7 +275,6 @@ namespace Feeder
                 return paths;
             }
 
-            // Dự phòng: quét toàn bộ script trong project (FindAssets trả path Assets/ tương đối, bỏ .meta và Library/).
             string[] guids = AssetDatabase.FindAssets("t:MonoScript");
             for (int i = 0; i < guids.Length; i++)
             {
@@ -337,8 +322,6 @@ namespace Feeder
         private static readonly Regex BlockOwnerPattern =
             new Regex(@"(?<![A-Za-z0-9_])(namespace|class|struct|interface|record)\s+([A-Za-z_][A-Za-z0-9_\.]*)");
 
-        // Đi ngược từ vị trí khai báo, mọi '{' ở độ sâu 0 là một khối bao ngoài.
-        // Ghép tên các khối đó lại được scope thật, dùng để phân biệt hai enum trùng tên.
         private static string GetEnclosingScope(string masked, int declarationIndex)
         {
             List<string> scopes = new List<string>();
@@ -418,18 +401,6 @@ namespace Feeder
             return false;
         }
 
-        // ---------- tính điểm chèn ----------
-
-        /// <summary>
-        /// Tìm vị trí chèn ngay SAU ký tự CODE có nghĩa cuối cùng của thân enum.
-        /// Chèn một phát duy nhất bằng String.Insert nên phần còn lại của file giữ nguyên từng byte —
-        /// đó chính là thứ làm cho diff chỉ hiện đúng những dòng thêm vào.
-        /// </summary>
-        /// <param name="masked">
-        /// Bản che comment/string cùng độ dài với <paramref name="original"/>. BẮT BUỘC quét trên bản này:
-        /// nếu quét trên bản gốc và khối kết thúc bằng comment, dấu phẩy sẽ bị chèn vào giữa comment
-        /// (bị comment nuốt mất) và enum không còn compile được.
-        /// </param>
         public static void ComputeInsertion(string original, string masked, int openBraceIndex, int closeBraceIndex,
             out int insertOffset, out bool needsLeadingComma, out bool bodyIsEmpty, out string indent)
         {
@@ -484,12 +455,6 @@ namespace Feeder
             return text.IndexOf("\r\n", StringComparison.Ordinal) >= 0 ? "\r\n" : "\n";
         }
 
-        // ---------- đánh số ----------
-
-        /// <summary>
-        /// Lấy giá trị kế tiếp từ reflection thay vì parse text. Dùng decimal làm bộ cộng vì
-        /// Convert.ToInt64 tràn với enum nền ulong, còn Convert.ToUInt64 ném lỗi với sbyte âm.
-        /// </summary>
         public static void GetNumbering(Type enumType, out decimal next, out decimal ceiling, out string keyword)
         {
             Type underlying = Enum.GetUnderlyingType(enumType);
@@ -557,11 +522,85 @@ namespace Feeder
             }
         }
 
-        // ---------- sinh text ----------
+        public static string BuildInsertion(IList<FeederEnumChange> group, string newline)
+        {
+            if (group.Count == 1 || !group[0].DeclareInExistingFile)
+            {
+                StringBuilder single = new StringBuilder();
+                for (int i = 0; i < group.Count; i++)
+                {
+                    single.Append(BuildInsertion(group[i], newline));
+                }
+
+                return single.ToString();
+            }
+
+            FeederEnumChange first = group[0];
+            StringBuilder builder = new StringBuilder();
+            if (first.InsertOffset > 0)
+            {
+                builder.Append(newline);
+                if (!first.BodyIsEmpty)
+                {
+                    builder.Append(newline);
+                }
+            }
+
+            bool wrap = !string.IsNullOrEmpty(first.WrapNamespace);
+            if (wrap)
+            {
+                builder.Append("namespace ").Append(first.WrapNamespace).Append(newline)
+                    .Append('{').Append(newline);
+            }
+
+            for (int i = 0; i < group.Count; i++)
+            {
+                if (i > 0)
+                {
+                    builder.Append(newline).Append(newline);
+                }
+
+                AppendEnumBlock(builder, group[i], newline, wrap ? "    " : group[i].BlockIndent);
+            }
+
+            if (wrap)
+            {
+                builder.Append(newline).Append('}');
+            }
+
+            return builder.ToString();
+        }
 
         public static string BuildInsertion(FeederEnumChange change, string newline)
         {
             StringBuilder builder = new StringBuilder();
+
+            if (change.DeclareInExistingFile)
+            {
+                if (change.InsertOffset > 0)
+                {
+                    builder.Append(newline);
+                    if (!change.BodyIsEmpty)
+                    {
+                        builder.Append(newline);
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(change.WrapNamespace))
+                {
+                    builder.Append("namespace ").Append(change.WrapNamespace).Append(newline)
+                        .Append('{').Append(newline);
+                    AppendEnumBlock(builder, change, newline, "    ");
+                    builder.Append(newline).Append('}');
+                }
+                else
+                {
+                    AppendEnumBlock(builder, change, newline, change.BlockIndent);
+                }
+
+                return builder.ToString();
+            }
+
             if (change.NeedsLeadingComma)
             {
                 builder.Append(',');
@@ -575,31 +614,151 @@ namespace Feeder
             return builder.ToString();
         }
 
-        /// <summary>
-        /// File enum mới: KHÔNG namespace. Đây là ràng buộc cứng — FeederScriptGenerator sinh class
-        /// không namespace và ghi field "public {token} {Field};", enum trong namespace sẽ làm file đó không compile.
-        /// </summary>
-        public static string BuildNewFileText(FeederEnumChange change, string newline)
+        public static string BuildNewFileText(IList<FeederEnumChange> changes, string newline, string sheetNamespace)
         {
+            bool wrap = !string.IsNullOrEmpty(sheetNamespace) && sheetNamespace.Trim().Length > 0;
+            string blockIndent = wrap ? "    " : string.Empty;
+
             StringBuilder builder = new StringBuilder();
-            builder.Append("public enum ").Append(change.EnumName)
-                .Append(" : ").Append(change.UnderlyingTypeKeyword).Append(newline);
-            builder.Append('{').Append(newline);
-            for (int i = 0; i < change.NewMembers.Count; i++)
+            if (wrap)
             {
-                builder.Append("    ").Append(MemberLine(change.NewMembers[i])).Append(newline);
+                builder.Append("namespace ").Append(sheetNamespace.Trim()).Append(newline)
+                    .Append('{').Append(newline);
             }
 
-            builder.Append('}').Append(newline);
+            for (int i = 0; i < changes.Count; i++)
+            {
+                if (i > 0)
+                {
+                    builder.Append(newline);
+                }
+
+                AppendEnumBlock(builder, changes[i], newline, blockIndent);
+                builder.Append(newline);
+            }
+
+            if (wrap)
+            {
+                builder.Append('}').Append(newline);
+            }
+
             return builder.ToString();
+        }
+
+        private static void AppendEnumBlock(StringBuilder builder, FeederEnumChange change, string newline,
+            string blockIndent)
+        {
+            builder.Append(blockIndent).Append("public enum ").Append(change.EnumName)
+                .Append(" : ").Append(change.UnderlyingTypeKeyword).Append(newline);
+            builder.Append(blockIndent).Append('{').Append(newline);
+            for (int i = 0; i < change.NewMembers.Count; i++)
+            {
+                builder.Append(blockIndent).Append("    ").Append(MemberLine(change.NewMembers[i])).Append(newline);
+            }
+
+            builder.Append(blockIndent).Append('}');
+        }
+
+        public static bool TryFindNamespaceBlock(string text, string masked, string ns,
+            out int insertOffset, out string blockIndent, out bool blockIsEmpty, out string error)
+        {
+            insertOffset = 0;
+            blockIndent = string.Empty;
+            blockIsEmpty = false;
+            error = null;
+
+            if (string.IsNullOrEmpty(masked))
+            {
+                return false;
+            }
+
+            Match chosen = null;
+            foreach (Match match in NamespaceBlockPattern.Matches(masked))
+            {
+                if (match.Groups[2].Value == ";")
+                {
+                    error = "file dùng namespace file-scoped (\"namespace X;\") — tool không chèn vào loại này. " +
+                            "Đổi sang dạng có { } hoặc trỏ Enum Script sang file khác.";
+                    return false;
+                }
+
+                string declared = match.Groups[1].Value.Trim('.');
+                string outer = GetEnclosingScope(masked, match.Index);
+                string full = string.IsNullOrEmpty(outer) ? declared : outer + "." + declared;
+                if (string.Equals(full, ns, StringComparison.Ordinal))
+                {
+                    chosen = match;
+                }
+            }
+
+            if (chosen == null)
+            {
+                return false;
+            }
+
+            int openBrace = masked.IndexOf('{', chosen.Index);
+            if (openBrace < 0 || !TryMatchBrace(masked, openBrace, out int closeBrace))
+            {
+                error = $"không tìm được '}}' đóng khối 'namespace {ns}'.";
+                return false;
+            }
+
+            int p = closeBrace - 1;
+            while (p > openBrace && char.IsWhiteSpace(masked[p]))
+            {
+                p--;
+            }
+
+            blockIsEmpty = p <= openBrace;
+            insertOffset = blockIsEmpty ? openBrace + 1 : p + 1;
+
+            string outerIndent = GetLineIndent(text, openBrace);
+            blockIndent = outerIndent + OneIndentLevel(outerIndent);
+            return true;
+        }
+
+        private static readonly Regex NamespaceBlockPattern =
+            new Regex(@"(?<![A-Za-z0-9_])namespace\s+([A-Za-z_][A-Za-z0-9_.]*)\s*([{;])");
+
+        public static int ComputeAppendOffset(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return 0;
+            }
+
+            int offset = text.Length;
+            while (offset > 0 && char.IsWhiteSpace(text[offset - 1]))
+            {
+                offset--;
+            }
+
+            return offset;
+        }
+
+        private static readonly Regex NamespacePattern =
+            new Regex(@"(?<![A-Za-z0-9_])namespace\s+[A-Za-z_]");
+
+        public static bool DeclaresNamespace(string masked)
+        {
+            return !string.IsNullOrEmpty(masked) && NamespacePattern.IsMatch(masked);
+        }
+
+        public static bool ContainsEnumDeclaration(string masked, string enumName)
+        {
+            if (string.IsNullOrEmpty(masked) || string.IsNullOrEmpty(enumName))
+            {
+                return false;
+            }
+
+            return Regex.IsMatch(masked,
+                $@"(?<![A-Za-z0-9_])enum\s+{Regex.Escape(enumName)}\s*(:\s*[A-Za-z0-9_\.]+\s*)?\{{");
         }
 
         private static string MemberLine(FeederEnumNewMember member)
         {
             return $"{member.MemberName} = {member.Value.ToString(CultureInfo.InvariantCulture)},";
         }
-
-        // ---------- IO đọc ----------
 
         public static bool IsUnderAssets(string assetPath)
         {

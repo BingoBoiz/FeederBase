@@ -11,14 +11,10 @@ namespace Feeder
         DuplicateIgnoreCase,
     }
 
-    /// <summary>Một giá trị đọc được từ một ô trong cột enum.</summary>
     public struct FeederEnumSheetValue
     {
-        // Đúng như trong sheet sau Trim(). Tên member PHẢI bám theo đây vì
-        // FeederDataAssetGenerator gọi Enum.Parse trên chính chuỗi này.
         public string RawValue;
 
-        // Tên viết ra file .cs — chỉ khác RawValue ở tiền tố '@' khi trùng từ khoá C#.
         public string MemberName;
 
         public int FirstRow;
@@ -29,7 +25,6 @@ namespace Feeder
         public bool IsWritable => Status == FeederEnumValueStatus.Ok || Status == FeederEnumValueStatus.Keyword;
     }
 
-    /// <summary>Kết quả quét một cột "s_Field:EnumType".</summary>
     public sealed class FeederEnumColumnScan
     {
         public int ColumnIndex;
@@ -50,7 +45,6 @@ namespace Feeder
         public string SourceTab;
     }
 
-    /// <summary>Thay đổi đề xuất cho MỘT enum.</summary>
     public sealed class FeederEnumChange
     {
         public bool Include = true;
@@ -60,15 +54,20 @@ namespace Feeder
         public string EnumFullName;
         public bool IsNew;
 
+        public bool DeclareInExistingFile;
+
+        public string BlockIndent = string.Empty;
+
+        public string WrapNamespace;
+
         [NonSerialized] public Type ExistingType;
 
-        // Chỉ đổi được khi IsNew.
         public string UnderlyingTypeKeyword = "byte";
         public bool InsertNoneZero = true;
 
-        // Vị trí chèn tính trên OriginalText của file (không đổi khi bật/tắt enum khác).
         public int InsertOffset;
         public bool NeedsLeadingComma;
+
         public bool BodyIsEmpty;
         public string Indent = "    ";
 
@@ -77,7 +76,6 @@ namespace Feeder
         public List<string> Orphans = new List<string>();
         public List<string> Warnings = new List<string>();
 
-        // Khác null => không bao giờ được ghi.
         public string BlockedReason;
 
         public List<string> SourceTabs = new List<string>();
@@ -86,15 +84,16 @@ namespace Feeder
         public bool HasWork => !IsBlocked && NewMembers.Count > 0;
     }
 
-    /// <summary>Tập thay đổi của một file .cs (có thể chứa nhiều enum).</summary>
     public sealed class FeederEnumFileChange
     {
-        // Luôn "Assets/..." forward slash.
         public string AssetPath;
         public bool IsNewFile;
         public string OriginalText;
         public bool OriginalHadBom;
         public string Newline = Environment.NewLine;
+
+        public string Namespace;
+
         public List<FeederEnumChange> Enums = new List<FeederEnumChange>();
     }
 
@@ -103,7 +102,6 @@ namespace Feeder
         public string SheetTypeName;
         public List<FeederEnumFileChange> Files = new List<FeederEnumFileChange>();
 
-        // Vấn đề không gắn với file cụ thể (enum trùng tên, nằm ngoài Assets/, không tìm được source...).
         public List<string> Issues = new List<string>();
 
         public bool HasApplicableChange

@@ -13,19 +13,21 @@ namespace Feeder
     public static class FeederDataAssetGenerator
     {
         public static void GenerateClass(string sheetName, string[,] cells, List<string> rawFields,
-            string assetFolderPath, string spriteAssetFolderPath, string prefabFolderPath)
+            string assetFolderPath, string spriteAssetFolderPath, string prefabFolderPath, string sheetNamespace)
         {
             sheetName = sheetName.Replace(" ", "");
             string typeName = cells[0, 0];
             string fileName = "Raw" + sheetName;
             string dataClassName = typeName + "Data";
-            Type assetType = GetTypeByName(dataClassName);
+            Type assetType = GetTypeByName(dataClassName, sheetNamespace);
             string path = $"Assets/{assetFolderPath}";
 
             if (assetType == null)
             {
                 EditorUtility.DisplayDialog("Error",
-                    "Cannot find the script " + dataClassName + ", please generate the script first.", "close");
+                    $"Cannot find the script {dataClassName}, please generate the script first.\n" +
+                    "Nếu vừa đổi Namespace của sheet thì phải bấm Generate Script rồi đợi compile xong.",
+                    "close");
                 return;
             }
 
@@ -40,7 +42,7 @@ namespace Feeder
             FieldInfo dataListField = assetType.GetField(listFieldName);
             object dataList = dataListField.GetValue(dataHolder);
 
-            Type dataType = GetTypeByName(typeName);
+            Type dataType = GetTypeByName(typeName, sheetNamespace);
             FieldInfo[] fields = dataType.GetFields();
             if (fields == null || fields.Length <= 0)
             {
@@ -61,7 +63,6 @@ namespace Feeder
                 return;
             }
 
-            // Chỉ xoá dữ liệu cũ sau khi mọi kiểm tra đã qua, tránh làm rỗng asset khi generate bị huỷ.
             dataList.GetType().GetMethod("Clear").Invoke(dataList, null);
 
             int columnCount = columnFields.Length;
@@ -81,7 +82,7 @@ namespace Feeder
                         FieldInfo fieldInfo = columnFields[col];
                         if (fieldInfo == null)
                         {
-                            continue; // Cột không map được field nào — bỏ qua, không làm lệch các cột sau.
+                            continue;
                         }
 
                         string cell = cells[col, row];
@@ -127,10 +128,6 @@ namespace Feeder
             Debug.Log($"Success !! {typeName} data is generated !!");
         }
 
-        // Ghép cột sheet với field trong class THEO TÊN.
-        // Trước đây map theo chỉ số (cột n -> field thứ n) nên chỉ cần một header bị bỏ qua lúc sinh script
-        // (header rỗng, header thiếu '_', hoặc sheet thêm cột mà chưa Generate Script lại) là mọi field
-        // phía sau nhận dữ liệu của cột bên cạnh — số thì parse fail và im lặng thành 0.
         private static FieldInfo[] MapColumnsToFields(string typeName, string[,] cells, List<string> rawFields,
             FieldInfo[] fields, out bool canProceed)
         {
@@ -568,24 +565,65 @@ namespace Feeder
             return normalizedFolderPath;
         }
 
-        public static Type GetTypeByName(string name)
+        public static Type GetTypeByName(string name, string sheetNamespace)
         {
+            string wanted = string.IsNullOrEmpty(sheetNamespace) || sheetNamespace.Trim().Length == 0
+                ? name
+                : $"{sheetNamespace.Trim()}.{name}";
+
+            Type loose = null;
             foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
             {
-                foreach (Type type in assembly.GetTypes())
+                foreach (Type type in GetAssemblyTypes(assembly))
                 {
-                    if (type.Name == name)
+                    if (type == null)
+                    {
+                        continue;
+                    }
+
+                    if (type.FullName == wanted)
                     {
                         return type;
+                    }
+
+                    if (loose == null && type.Name == name)
+                    {
+                        loose = type;
                     }
                 }
             }
 
-            return null;
+            if (loose != null && loose.FullName != wanted)
+            {
+                Debug.LogWarning(
+                    $"[Feeder] Không có '{wanted}', dùng tạm '{loose.FullName}' vì trùng tên ngắn. " +
+                    "Đặt Namespace của sheet cho khớp rồi Generate Script lại nếu đây không phải class mong muốn.");
+            }
+
+            return loose;
         }
 
-        // Google/Excel lưu số trong <v> dưới dạng thô: ô hiển thị "2" có thể ra "2.0" hoặc "2.0000000000000004"
-        // (ô công thức), và locale VN có thể cho ra "2,0". Luôn parse invariant, chấp nhận thập phân + mũ.
+        public static Type GetTypeByName(string name)
+        {
+            return GetTypeByName(name, null);
+        }
+
+        private static IEnumerable<Type> GetAssemblyTypes(Assembly assembly)
+        {
+            try
+            {
+                return assembly.GetTypes();
+            }
+            catch (ReflectionTypeLoadException e)
+            {
+                return e.Types ?? Array.Empty<Type>();
+            }
+            catch (Exception)
+            {
+                return Array.Empty<Type>();
+            }
+        }
+
         private static bool TryParseSheetDouble(string rawValue, out double result)
         {
             string normalized = rawValue == null ? string.Empty : rawValue.Trim();
@@ -603,7 +641,6 @@ namespace Feeder
             return false;
         }
 
-        // decimal giữ nguyên độ chính xác cho mọi kiểu số nguyên (tới ulong.MaxValue) nên không mất số như float.
         private static bool TryParseSheetDecimal(string rawValue, out decimal result)
         {
             string normalized = rawValue == null ? string.Empty : rawValue.Trim();
@@ -621,8 +658,6 @@ namespace Feeder
             return false;
         }
 
-        // Dùng chung cho byte/short/ushort/int/uint/long/ulong — trước đây chỉ mỗi int được parse kiểu này,
-        // các kiểu còn lại dùng TryParse theo CurrentCulture nên "2.0" ra 0.
         private static bool TryParseSheetInteger(string rawValue, decimal min, decimal max, out decimal result)
         {
             result = 0m;

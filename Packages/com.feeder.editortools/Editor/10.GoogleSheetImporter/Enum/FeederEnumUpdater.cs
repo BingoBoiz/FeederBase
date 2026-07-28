@@ -7,18 +7,14 @@ using UnityEngine;
 
 namespace Feeder
 {
-    /// <summary>
-    /// Ghép mọi thứ lại: quét -> dựng plan -> đổi thành change set cho cửa sổ diff -> ghi.
-    /// </summary>
     public static class FeederEnumUpdater
     {
-        // Trên ngưỡng này thì enum mới dùng int thay vì byte, tránh đụng trần 255 ngay lần import sau.
         private const int ByteMemberThreshold = 200;
 
         private const string NoneMemberName = "None";
 
         public static FeederEnumUpdatePlan BuildPlan(IList<FeederEnumColumnScan> scans, string scriptFolderAssetPath,
-            string sheetTypeName)
+            string sheetTypeName, string enumScriptAssetPath = null, string sheetNamespace = null)
         {
             FeederEnumUpdatePlan plan = new FeederEnumUpdatePlan { SheetTypeName = sheetTypeName };
             if (scans == null || scans.Count == 0)
@@ -26,8 +22,6 @@ namespace Feeder
                 return plan;
             }
 
-            // Gộp các cột trỏ về cùng một enum (kể cả ở khác tab) thành MỘT thay đổi duy nhất.
-            // Không gộp thì quét từng tab sẽ append thiếu rồi lần sau append tiếp với số cao hơn.
             List<string> tokenOrder = new List<string>();
             Dictionary<string, List<FeederEnumColumnScan>> byToken =
                 new Dictionary<string, List<FeederEnumColumnScan>>(StringComparer.Ordinal);
@@ -50,7 +44,8 @@ namespace Feeder
             for (int i = 0; i < tokenOrder.Count; i++)
             {
                 string token = tokenOrder[i];
-                BuildChangeForToken(plan, filesByPath, token, byToken[token], scriptFolderAssetPath);
+                BuildChangeForToken(plan, filesByPath, token, byToken[token], scriptFolderAssetPath,
+                    enumScriptAssetPath, sheetNamespace);
             }
 
             return plan;
@@ -58,13 +53,14 @@ namespace Feeder
 
         private static void BuildChangeForToken(FeederEnumUpdatePlan plan,
             Dictionary<string, FeederEnumFileChange> filesByPath,
-            string token, List<FeederEnumColumnScan> columns, string scriptFolderAssetPath)
+            string token, List<FeederEnumColumnScan> columns, string scriptFolderAssetPath,
+            string enumScriptAssetPath, string sheetNamespace)
         {
             MergeValues(columns, out List<FeederEnumSheetValue> writable,
                 out List<FeederEnumSheetValue> rejected, out List<string> warnings, out List<string> tabs);
 
-            FeederEnumResolveStatus status =
-                FeederEnumUtils.TryResolveEnumType(token, out Type existing, out List<Type> candidates);
+            FeederEnumResolveStatus status = FeederEnumUtils.TryResolveEnumType(token, sheetNamespace,
+                out Type existing, out List<Type> candidates);
 
             if (status == FeederEnumResolveStatus.Ambiguous)
             {
@@ -76,7 +72,8 @@ namespace Feeder
 
                 plan.Issues.Add(
                     $"'{token}' trùng tên ở nhiều nơi ({string.Join(", ", names)}). " +
-                    "Ghi tên đầy đủ trong header sheet, ví dụ s_Field:Yolo.testEnum.TreeType.");
+                    "Ghi tên đầy đủ trong header sheet (ví dụ s_Field:Yolo.testEnum.TreeType), " +
+                    "hoặc đặt Namespace của sheet cho đúng.");
                 return;
             }
 
@@ -91,62 +88,157 @@ namespace Feeder
 
             if (status == FeederEnumResolveStatus.NotFound)
             {
-                BuildNewEnumChange(plan, filesByPath, change, token, writable, scriptFolderAssetPath);
+                List<Type> elsewhere = FeederEnumUtils.FindEnumsOutsideScope(token, sheetNamespace);
+                if (elsewhere.Count > 0)
+                {
+                    List<string> names = new List<string>();
+                    for (int i = 0; i < elsewhere.Count; i++)
+                    {
+                        names.Add(elsewhere[i].FullName?.Replace('+', '.'));
+                    }
+
+                    plan.Issues.Add(
+                        $"'{token}' không có ở {FeederEnumUtils.DescribeScope(sheetNamespace)} nhưng có ở: " +
+                        $"{string.Join(", ", names)}. Apply sẽ TẠO MỚI một enum '{token}' thứ hai và KHÔNG " +
+                        $"đụng tới cái đang có. Muốn dùng lại cái có sẵn: đặt Namespace của sheet = " +
+                        $"'{elsewhere[0].Namespace ?? string.Empty}', hoặc ghi tên đầy đủ trong header " +
+                        $"(ví dụ s_Field:{names[0]}).");
+                }
+
+                BuildNewEnumChange(plan, filesByPath, change, token, writable, scriptFolderAssetPath,
+                    enumScriptAssetPath, sheetNamespace);
                 return;
             }
 
-            BuildExistingEnumChange(plan, filesByPath, change, existing, writable);
+            BuildExistingEnumChange(plan, filesByPath, change, existing, writable, enumScriptAssetPath);
         }
-
-        // ---------- enum mới ----------
 
         private static void BuildNewEnumChange(FeederEnumUpdatePlan plan,
             Dictionary<string, FeederEnumFileChange> filesByPath, FeederEnumChange change, string token,
-            List<FeederEnumSheetValue> writable, string scriptFolderAssetPath)
+            List<FeederEnumSheetValue> writable, string scriptFolderAssetPath, string enumScriptAssetPath,
+            string sheetNamespace)
         {
-            // Token dạng "A.B.Type" mà không phân giải được thì không đoán được nên tạo ở đâu.
             if (token.IndexOf('.') >= 0)
             {
                 plan.Issues.Add($"'{token}' không tồn tại và có dấu '.' — tool chỉ tạo mới enum tên đơn giản.");
                 return;
             }
 
-            if (scriptFolderAssetPath.IsNullOrWhitespace())
+            bool useEnumScript = !enumScriptAssetPath.IsNullOrWhitespace();
+            if (!useEnumScript && scriptFolderAssetPath.IsNullOrWhitespace())
             {
-                plan.Issues.Add($"Không tạo được enum '{token}': Script Folder đang trống.");
+                plan.Issues.Add(
+                    $"Không tạo được enum '{token}': cả Enum Script lẫn Script Folder đều đang trống.");
                 return;
             }
 
+            string ns = sheetNamespace.IsNullOrWhitespace() ? string.Empty : sheetNamespace.Trim();
+
             change.EnumName = token;
-            change.EnumFullName = token;
+            change.EnumFullName = ns.Length == 0 ? token : $"{ns}.{token}";
             change.IsNew = true;
             change.InsertNoneZero = true;
             change.UnderlyingTypeKeyword =
                 writable.Count + 1 <= ByteMemberThreshold ? "byte" : "int";
 
-            string assetPath = $"{scriptFolderAssetPath.TrimEnd('/')}/{token}.cs";
-            if (File.Exists(Path.GetFullPath(assetPath)))
+            string assetPath = useEnumScript
+                ? enumScriptAssetPath
+                : $"{scriptFolderAssetPath.TrimEnd('/')}/{token}.cs";
+
+            string existingText = null;
+            bool hadBom = false;
+            if (useEnumScript)
             {
-                // Gần như luôn là "người dùng đã tự thêm và file đang lỗi compile" — không bao giờ ghi đè.
+                existingText = FeederEnumSourceEditor.TryReadText(assetPath, out hadBom);
+            }
+            else if (File.Exists(Path.GetFullPath(assetPath)))
+            {
                 change.BlockedReason = $"File {assetPath} đã tồn tại nhưng type chưa load (có thể đang lỗi compile).";
             }
 
             AssignNewEnumMembers(change, writable);
 
-            FeederEnumFileChange file = new FeederEnumFileChange
+            if (useEnumScript && existingText != null)
             {
-                AssetPath = assetPath,
-                IsNewFile = true,
-                OriginalText = null,
-                OriginalHadBom = false,
-                Newline = Environment.NewLine,
-            };
+                string masked = FeederEnumSourceEditor.MaskCommentsAndStrings(existingText);
+                if (!change.IsBlocked && FeederEnumSourceEditor.ContainsEnumDeclaration(masked, token))
+                {
+                    change.BlockedReason =
+                        $"'{token}' đã được khai báo trong {assetPath} nhưng type chưa load " +
+                        "(có thể file đang lỗi compile) — không nối thêm khai báo trùng tên.";
+                }
+
+                bool foundBlock = FeederEnumSourceEditor.TryFindNamespaceBlock(existingText, masked, ns,
+                    out int nsOffset, out string nsIndent, out bool nsEmpty, out string nsError);
+
+                if (nsError != null && !change.IsBlocked)
+                {
+                    change.BlockedReason = $"{assetPath}: {nsError}";
+                }
+
+                if (foundBlock)
+                {
+                    change.InsertOffset = nsOffset;
+                    change.BlockIndent = nsIndent;
+                    change.BodyIsEmpty = nsEmpty;
+                }
+                else
+                {
+                    change.InsertOffset = FeederEnumSourceEditor.ComputeAppendOffset(existingText);
+
+                    if (ns.Length > 0)
+                    {
+                        change.WrapNamespace = ns;
+                        change.Warnings.Add(
+                            $"{assetPath} chưa có khối 'namespace {ns}' — enum mới được thêm vào một khối " +
+                            $"'namespace {ns}' mới ở cuối file.");
+                    }
+                    else if (FeederEnumSourceEditor.DeclaresNamespace(masked))
+                    {
+                        change.Warnings.Add(
+                            $"{assetPath} có namespace nhưng sheet đang để trống Namespace — enum mới nằm ở " +
+                            "global scope (cuối file). Muốn nó nằm cùng namespace với code còn lại thì đặt " +
+                            "trường Namespace của sheet.");
+                    }
+                }
+
+                if (!filesByPath.TryGetValue(assetPath, out FeederEnumFileChange target))
+                {
+                    target = new FeederEnumFileChange
+                    {
+                        AssetPath = assetPath,
+                        IsNewFile = false,
+                        OriginalText = existingText,
+                        OriginalHadBom = hadBom,
+                        Newline = FeederEnumSourceEditor.DetectNewline(existingText),
+                    };
+                    filesByPath.Add(assetPath, target);
+                    plan.Files.Add(target);
+                }
+
+                change.DeclareInExistingFile = true;
+                target.Enums.Add(change);
+                return;
+            }
+
+            if (!filesByPath.TryGetValue(assetPath, out FeederEnumFileChange file))
+            {
+                file = new FeederEnumFileChange
+                {
+                    AssetPath = assetPath,
+                    IsNewFile = true,
+                    OriginalText = null,
+                    OriginalHadBom = false,
+                    Newline = Environment.NewLine,
+                    Namespace = ns,
+                };
+                filesByPath.Add(assetPath, file);
+                plan.Files.Add(file);
+            }
+
             file.Enums.Add(change);
-            plan.Files.Add(file);
-            filesByPath[assetPath] = file;
         }
 
-        /// <summary>Đánh số cho enum mới. Có thể gọi lại khi người dùng đổi None/underlying trong cửa sổ diff.</summary>
         public static void AssignNewEnumMembers(FeederEnumChange change, List<FeederEnumSheetValue> writable)
         {
             change.NewMembers.Clear();
@@ -157,7 +249,6 @@ namespace Feeder
             {
                 if (existingNone >= 0)
                 {
-                    // Sheet đã có "None" thì dùng chính nó làm giá trị 0, đừng sinh ra hai cái.
                     FeederEnumSheetValue none = ordered[existingNone];
                     ordered.RemoveAt(existingNone);
                     ordered.Insert(0, none);
@@ -195,11 +286,9 @@ namespace Feeder
             }
         }
 
-        // ---------- enum đã có ----------
-
         private static void BuildExistingEnumChange(FeederEnumUpdatePlan plan,
             Dictionary<string, FeederEnumFileChange> filesByPath, FeederEnumChange change, Type existing,
-            List<FeederEnumSheetValue> writable)
+            List<FeederEnumSheetValue> writable, string enumScriptAssetPath)
         {
             change.EnumName = existing.Name;
             change.EnumFullName = existing.FullName;
@@ -217,8 +306,6 @@ namespace Feeder
                 }
             }
 
-            // Chỉ báo cáo, không bao giờ xoá: mọi asset/prefab/scene đã serialize vẫn giữ GIÁ TRỊ SỐ,
-            // xoá member sẽ biến chúng thành enum ngoài phạm vi (dropdown trống trong Inspector).
             foreach (string name in existingNames)
             {
                 bool inSheet = false;
@@ -244,7 +331,6 @@ namespace Feeder
 
             if (existing.IsDefined(typeof(FlagsAttribute), false))
             {
-                // max+1 sai nghĩa với flags; "luỹ thừa 2 kế tiếp" cũng sai khi có member tổ hợp (All = A|B|C).
                 change.BlockedReason = "enum có [Flags] — tool không tự đánh số bit, hãy thêm tay.";
             }
 
@@ -252,6 +338,14 @@ namespace Feeder
             {
                 plan.Issues.Add($"{existing.Name}: {locateError}");
                 return;
+            }
+
+            if (!enumScriptAssetPath.IsNullOrWhitespace() &&
+                !string.Equals(location.AssetPath, enumScriptAssetPath, StringComparison.OrdinalIgnoreCase))
+            {
+                change.Warnings.Add(
+                    $"enum {existing.Name} đang nằm ở {location.AssetPath}, không phải Enum Script đã chỉ định " +
+                    $"({enumScriptAssetPath}) — member mới vẫn được thêm tại chỗ.");
             }
 
             FeederEnumSourceEditor.GetNumbering(existing, out decimal next, out decimal ceiling, out string keyword);
@@ -303,8 +397,6 @@ namespace Feeder
             file.Enums.Add(change);
         }
 
-        // ---------- gộp giá trị ----------
-
         private static void MergeValues(List<FeederEnumColumnScan> columns,
             out List<FeederEnumSheetValue> writable, out List<FeederEnumSheetValue> rejected,
             out List<string> warnings, out List<string> tabs)
@@ -344,8 +436,6 @@ namespace Feeder
             }
         }
 
-        // ---------- dựng text ----------
-
         public static string BuildFileText(FeederEnumFileChange file, IEnumerable<FeederEnumChange> included)
         {
             HashSet<FeederEnumChange> set = new HashSet<FeederEnumChange>();
@@ -359,33 +449,47 @@ namespace Feeder
 
             if (file.IsNewFile)
             {
-                FeederEnumChange only = file.Enums.Count > 0 ? file.Enums[0] : null;
-                if (only == null || !set.Contains(only) || !only.HasWork)
+                List<FeederEnumChange> fresh = new List<FeederEnumChange>();
+                for (int i = 0; i < file.Enums.Count; i++)
                 {
-                    return string.Empty;
+                    if (set.Contains(file.Enums[i]) && file.Enums[i].HasWork)
+                    {
+                        fresh.Add(file.Enums[i]);
+                    }
                 }
 
-                return FeederEnumSourceEditor.BuildNewFileText(only, file.Newline);
+                return fresh.Count == 0
+                    ? string.Empty
+                    : FeederEnumSourceEditor.BuildNewFileText(fresh, file.Newline, file.Namespace);
             }
 
-            List<FeederEnumChange> applicable = new List<FeederEnumChange>();
+            Dictionary<int, List<FeederEnumChange>> groups = new Dictionary<int, List<FeederEnumChange>>();
+            List<int> offsets = new List<int>();
             for (int i = 0; i < file.Enums.Count; i++)
             {
-                if (set.Contains(file.Enums[i]) && file.Enums[i].HasWork)
+                FeederEnumChange change = file.Enums[i];
+                if (!set.Contains(change) || !change.HasWork)
                 {
-                    applicable.Add(file.Enums[i]);
+                    continue;
                 }
+
+                if (!groups.TryGetValue(change.InsertOffset, out List<FeederEnumChange> group))
+                {
+                    group = new List<FeederEnumChange>();
+                    groups.Add(change.InsertOffset, group);
+                    offsets.Add(change.InsertOffset);
+                }
+
+                group.Add(change);
             }
 
-            // Chèn từ cuối file lên đầu: mọi lần chèn sau đều nằm TRƯỚC chỗ đã chèn,
-            // nên InsertOffset tính một lần trên OriginalText luôn còn đúng.
-            applicable.Sort((a, b) => b.InsertOffset.CompareTo(a.InsertOffset));
+            offsets.Sort((a, b) => b.CompareTo(a));
 
             string text = file.OriginalText ?? string.Empty;
-            for (int i = 0; i < applicable.Count; i++)
+            for (int i = 0; i < offsets.Count; i++)
             {
-                text = text.Insert(applicable[i].InsertOffset,
-                    FeederEnumSourceEditor.BuildInsertion(applicable[i], file.Newline));
+                text = text.Insert(offsets[i],
+                    FeederEnumSourceEditor.BuildInsertion(groups[offsets[i]], file.Newline));
             }
 
             return text;
@@ -502,8 +606,6 @@ namespace Feeder
 
             FeederWriteReport report = FeederChangeWriter.Write(files);
 
-            // AssetDatabase.Refresh() chỉ nạp lại domain khi Auto Refresh bật; xoá cache thủ công
-            // để lần Update Enum kế tiếp không đề xuất lại đúng những member vừa ghi.
             FeederEnumUtils.InvalidateCache();
 
             int memberCount = 0;

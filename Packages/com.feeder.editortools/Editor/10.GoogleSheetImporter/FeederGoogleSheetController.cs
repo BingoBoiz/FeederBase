@@ -10,12 +10,6 @@ using Object = System.Object;
 
 namespace Feeder
 {
-    /// <summary>
-    /// Đọc Google Sheet công khai qua endpoint export XLSX — KHÔNG cần credential/API key.
-    /// Yêu cầu sheet được chia sẻ "Bất kỳ ai có link – Người xem (Viewer)".
-    /// Tải toàn bộ workbook 1 lần rồi parse OOXML để lấy: tên tab, giá trị ô, và hàng bị gạch ngang.
-    /// Chỉ đọc (không ghi).
-    /// </summary>
     public class FeederGoogleSheetController
     {
         private static readonly HttpClient Http = CreateHttpClient();
@@ -27,14 +21,12 @@ namespace Feeder
         private readonly Dictionary<string, List<List<string>>> sheetValues = new Dictionary<string, List<List<string>>>();
         private readonly Dictionary<string, List<int>> struckRows = new Dictionary<string, List<int>>();
 
-        // Cache sau khi tải để parse từng tab khi cần (chế độ lazy), không tải lại workbook.
         private byte[] xlsxBytes;
         private List<string> sharedStrings;
         private List<bool> cellStrikeStyles;
         private Dictionary<string, string> relIdToPath;
         private readonly List<(string name, string relId)> sheetDefs = new List<(string, string)>();
 
-        // Full: tải + parse toàn bộ tab.
         public FeederGoogleSheetController(string sheetSpreadsheetId)
         {
             xlsxBytes = DownloadXlsx(sheetSpreadsheetId);
@@ -45,7 +37,6 @@ namespace Feeder
             }
         }
 
-        // Lazy: chỉ tải + đọc danh sách tab; gọi EnsureSheet(name) để parse tab cần dùng.
         public static FeederGoogleSheetController CreateForSingleSheet(string sheetSpreadsheetId)
         {
             FeederGoogleSheetController controller = new FeederGoogleSheetController();
@@ -89,7 +80,6 @@ namespace Feeder
             return result;
         }
 
-        // Trả về: sheetName -> danh sách chỉ số hàng (0-based, cùng hệ quy chiếu với Values) bị gạch ngang toàn bộ.
         public Dictionary<string, List<int>> GetStrikethroughRowsPerSheet(List<string> names)
         {
             Dictionary<string, List<int>> result = new Dictionary<string, List<int>>();
@@ -116,7 +106,6 @@ namespace Feeder
             byte[] data;
             try
             {
-                // Chạy trên thread pool để không phụ thuộc editor update loop (tránh deadlock khi block main thread).
                 data = Task.Run(async () =>
                 {
                     using (HttpResponseMessage resp = await Http.GetAsync(url))
@@ -135,7 +124,6 @@ namespace Feeder
                 throw new Exception($"Không tải được sheet. Kiểm tra Spreadsheet ID và kết nối mạng.\n{e.Message}");
             }
 
-            // File xlsx là zip → bắt đầu bằng "PK". Nếu không, thường là trang login HTML (sheet chưa public).
             if (data == null || data.Length < 4 || data[0] != 0x50 || data[1] != 0x4B)
             {
                 throw new Exception(
@@ -147,7 +135,6 @@ namespace Feeder
 
         // ---------- Parse OOXML ----------
 
-        // Đọc metadata (shared strings, styles, quan hệ rel, danh sách tab) — cache lại, chưa parse dữ liệu ô.
         private void ReadMetadata()
         {
             using (ZipArchive zip = new ZipArchive(new MemoryStream(xlsxBytes), ZipArchiveMode.Read))
@@ -163,7 +150,6 @@ namespace Feeder
             }
         }
 
-        // Parse 1 tab theo tên (idempotent), dùng metadata đã cache — không tải lại.
         public void EnsureSheet(string name)
         {
             if (string.IsNullOrEmpty(name) || sheetValues.ContainsKey(name))
@@ -215,8 +201,6 @@ namespace Feeder
 
             SortedDictionary<int, List<string>> rowsByIndex = new SortedDictionary<int, List<string>>();
             SortedDictionary<int, bool> rowStruck = new SortedDictionary<int, bool>();
-            // Chỉ tính tới hàng CUỐI CÙNG có nội dung. Google export XLSX kèm cả lưới trống (~1000 hàng),
-            // phải cắt hàng trống ở cuối giống values.batchGet để không sinh item rác.
             int lastContentRow = -1;
 
             foreach (XElement row in sheetData.Elements(Main + "row"))
@@ -261,7 +245,7 @@ namespace Feeder
 
                 if (!hasContent)
                 {
-                    continue; // bỏ qua hàng hoàn toàn trống (kể cả hàng chỉ có định dạng)
+                    continue;
                 }
 
                 TrimTrailingEmpty(cells);
@@ -303,12 +287,12 @@ namespace Feeder
                     XElement inline = c.Element(Main + "is");
                     return inline != null ? ConcatText(inline) : string.Empty;
                 }
-                case "b": // boolean → xuất "TRUE"/"FALSE" để asset generator parse đúng
+                case "b":
                 {
                     XElement v = c.Element(Main + "v");
                     return v != null && v.Value == "1" ? "TRUE" : "FALSE";
                 }
-                default: // number, "str" (formula string), hoặc rỗng
+                default:
                 {
                     XElement v = c.Element(Main + "v");
                     return v != null ? v.Value : string.Empty;
@@ -339,7 +323,6 @@ namespace Feeder
             return result;
         }
 
-        // Trả về danh sách theo chỉ số cellXfs: xf đó có font gạch ngang hay không.
         private static List<bool> ReadCellStrikes(ZipArchive zip)
         {
             List<bool> result = new List<bool>();
@@ -471,7 +454,6 @@ namespace Feeder
             return sb.ToString();
         }
 
-        // "AB12" -> chỉ số cột 0-based (27). Trả về -1 nếu không hợp lệ.
         private static int ColumnIndex(string cellRef)
         {
             if (string.IsNullOrEmpty(cellRef))

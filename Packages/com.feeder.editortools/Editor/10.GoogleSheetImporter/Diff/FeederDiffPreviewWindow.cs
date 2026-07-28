@@ -6,10 +6,6 @@ using UnityEngine;
 
 namespace Feeder
 {
-    /// <summary>
-    /// Cửa sổ xem trước thay đổi file .cs, trình bày theo kiểu diff của Fork:
-    /// header từng file, hunk "@@", hai cột số dòng đứng yên khi cuộn ngang, nền xanh/đỏ cho dòng thêm/xoá.
-    /// </summary>
     public sealed class FeederDiffPreviewWindow : EditorWindow
     {
         private const int MaxVisualRows = 20000;
@@ -70,14 +66,12 @@ namespace Feeder
                 return;
             }
 
-            // Không bao giờ để hai hộp xác nhận cùng sống.
             if (current != null)
             {
                 current.Close();
                 current = null;
             }
 
-            // CreateInstance chứ không GetWindow: cửa sổ này không nên dock và không nên tái sử dụng.
             FeederDiffPreviewWindow window = CreateInstance<FeederDiffPreviewWindow>();
             window.titleContent = new GUIContent(title);
             window.minSize = new Vector2(820f, 480f);
@@ -101,10 +95,6 @@ namespace Feeder
 
         private void OnEnable()
         {
-            // live là [NonSerialized] nên sau domain reload nó về false — instance đó chỉ còn là xác.
-            // CreateInstance() cũng gọi OnEnable TRƯỚC khi Open() kịp gán live = true, nên ở đây
-            // không phân biệt được xác với cửa sổ vừa tạo — phải kiểm tra lại live lúc delayCall chạy,
-            // khi Open() đã gán xong.
             EditorApplication.delayCall += () =>
             {
                 if (this != null && !live)
@@ -121,7 +111,6 @@ namespace Feeder
                 current = null;
             }
 
-            // Đóng bằng dấu X cũng tính là huỷ.
             if (!completed && onComplete != null)
             {
                 Action<FeederDiffApplyResult> callback = onComplete;
@@ -129,8 +118,6 @@ namespace Feeder
                 callback(new FeederDiffApplyResult { Accepted = false });
             }
         }
-
-        // ---------- dựng state ----------
 
         private void RebuildAll()
         {
@@ -221,7 +208,6 @@ namespace Feeder
             maxLineChars = 0;
             truncated = false;
 
-            // Index cũ không còn trỏ đúng row sau khi dựng lại.
             hoverRow = -1;
 
             for (int f = 0; f < changeSet.Files.Count; f++)
@@ -343,8 +329,6 @@ namespace Feeder
             return Mathf.Clamp(index, 0, rows.Count - 1);
         }
 
-        // ---------- vẽ ----------
-
         private void OnGUI()
         {
             if (changeSet == null || onComplete == null)
@@ -404,8 +388,6 @@ namespace Feeder
             {
                 evt.Use();
 
-                // Nút Apply bị DisabledScope chặn khi chưa chọn file nào; phím tắt phải chặn y hệt,
-                // nếu không sẽ Complete() với AcceptedFiles rỗng và cửa sổ đóng im lặng.
                 if (SelectedCount() > 0)
                 {
                     Apply();
@@ -476,10 +458,6 @@ namespace Feeder
 
             UpdateHover(viewport);
 
-            // Checkbox của item và foldout của file được vẽ NGAY TRONG vòng lặp dưới, và cả hai đều
-            // gọi RebuildRows() -> rows.Clear() + cấp phát rowTop mảng mới (thường ngắn hơn).
-            // first/last thì chỉ tính một lần, nên phải dừng vòng lặp ngay khi mảng bị thay,
-            // nếu không sẽ đọc quá biên và ném exception trước GUI.EndScrollView() -> lệch GUIClip stack.
             float[] tops = rowTop;
             scroll = GUI.BeginScrollView(viewport, scroll, new Rect(0f, 0f, contentWidth, totalHeight));
             if (rows.Count > 0)
@@ -495,7 +473,6 @@ namespace Feeder
 
             GUI.EndScrollView();
 
-            // Cấu trúc đã đổi giữa chừng: frame này vẽ thiếu, xin vẽ lại ngay bằng số liệu mới.
             if (rowTop != tops)
             {
                 Repaint();
@@ -552,7 +529,6 @@ namespace Feeder
                 EditorGUI.DrawRect(new Rect(rect.x, rect.yMax - 1f, contentWidth, 1f), FeederDiffStyles.Separator);
             }
 
-            // Ghim theo trục ngang để header không trôi mất khi cuộn sang phải.
             float x = scroll.x + 4f;
 
             Rect toggleRect = new Rect(x, rect.y + 5f, CheckboxWidth, 16f);
@@ -700,7 +676,6 @@ namespace Feeder
 
             float codeX = FeederDiffStyles.CodeOffsetX;
 
-            // Highlight theo ký tự chỉ đúng khi font là mono và tab đã đổi thành space từ lúc dựng diff.
             if (FeederDiffStyles.HasMonoFont && line.HlEnd > line.HlStart)
             {
                 float charWidth = FeederDiffStyles.CharWidth;
@@ -714,7 +689,6 @@ namespace Feeder
             Rect codeRect = new Rect(codeX, rect.y, Mathf.Max(10f, contentWidth - codeX), rect.height);
             GUI.Label(codeRect, line.Text ?? string.Empty, FeederDiffStyles.Code);
 
-            // Vẽ máng số dòng SAU phần code và ghim theo scroll.x để nó đè lên, giống Fork.
             float gutterX = scroll.x;
             EditorGUI.DrawRect(new Rect(gutterX, rect.y, FeederDiffStyles.CodeOffsetX, rect.height),
                 FeederDiffStyles.GutterBg);
@@ -759,8 +733,6 @@ namespace Feeder
             GUILayout.Space(6f);
             EditorGUILayout.EndHorizontal();
         }
-
-        // ---------- hành động ----------
 
         private void SetAllSelected(bool value)
         {
@@ -863,7 +835,6 @@ namespace Feeder
             onComplete = null;
             pendingClose = true;
 
-            // Callback sẽ ghi file rồi Refresh() -> reload domain, nên phải chạy sau khi cửa sổ đã đóng.
             if (callback != null)
             {
                 EditorApplication.delayCall += () => callback(result);

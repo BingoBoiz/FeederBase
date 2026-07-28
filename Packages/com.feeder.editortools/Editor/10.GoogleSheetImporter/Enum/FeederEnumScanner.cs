@@ -4,10 +4,6 @@ using NabaGame.Core.Runtime.Extensions;
 
 namespace Feeder
 {
-    /// <summary>
-    /// Quét bảng cells để tìm các cột khai báo enum ("s_Field:EnumType") và gom giá trị distinct.
-    /// Quét cells chứ không quét sheetData: BuildCells đã lọc sẵn hàng bị gạch ngang và cột prefix '/'.
-    /// </summary>
     public static class FeederEnumScanner
     {
         private const char SkipColumnPrefix = '/';
@@ -65,8 +61,6 @@ namespace Feeder
             return results;
         }
 
-        // rawFields có thể ngắn hơn số cột thật (BuildCells bỏ qua cả hàng 1 khi nó rỗng),
-        // nên luôn lặp theo cells và chỉ dùng rawFields như nguồn ưu tiên.
         private static string GetHeader(string[,] cells, List<string> rawFields, int column, int rowCount)
         {
             if (rawFields != null && column < rawFields.Count && !rawFields[column].IsNullOrWhitespace())
@@ -77,10 +71,6 @@ namespace Feeder
             return rowCount > 1 ? cells[column, 1] : null;
         }
 
-        /// <summary>
-        /// Tách "s_SkillType:SkillConfigType". Dùng Split(':') để khớp y hệt FeederScriptGenerator —
-        /// nếu dùng IndexOf(':') thì header "s_X:A:B" sẽ ra kết quả khác generator, sai âm thầm.
-        /// </summary>
         public static bool TryParseEnumHeader(string rawHeader, out string fieldName, out string enumTypeToken)
         {
             fieldName = null;
@@ -128,8 +118,6 @@ namespace Feeder
             {
                 string raw = cells[column, row];
 
-                // Ô rỗng không bao giờ sinh giá trị mới: FeederDataAssetGenerator coi ô rỗng
-                // là "lặp lại giá trị không rỗng gần nhất của cột", nên bỏ qua là an toàn tuyệt đối.
                 if (raw.IsNullOrWhitespace())
                 {
                     continue;
@@ -170,10 +158,6 @@ namespace Feeder
             }
         }
 
-        /// <summary>
-        /// Phân loại giá trị sheet. KHÔNG tự sửa tên: FeederDataAssetGenerator sẽ gọi Enum.Parse
-        /// trên chuỗi gốc, nên đổi "Fire Ball" thành "Fire_Ball" sẽ khiến Generate Assets lỗi mọi dòng.
-        /// </summary>
         public static FeederEnumValueStatus Classify(string raw, out string memberName, out string detail)
         {
             memberName = raw;
@@ -187,7 +171,6 @@ namespace Feeder
 
             if (raw.IndexOf(ZeroWidthSpace) >= 0)
             {
-                // Trim() không bắt được U+200B nên nếu không báo rõ thì đây là lỗi vô hình.
                 detail = "chứa ký tự ẩn U+200B (zero-width space)";
                 return FeederEnumValueStatus.Invalid;
             }
@@ -212,7 +195,6 @@ namespace Feeder
 
             if (CSharpKeywords.Contains(raw))
             {
-                // '@' chỉ là cú pháp: tên CLR vẫn là "new" nên Enum.Parse("new") vẫn chạy đúng.
                 memberName = "@" + raw;
                 detail = "trùng từ khoá C#, tự thêm tiền tố '@'";
                 return FeederEnumValueStatus.Keyword;

@@ -4,15 +4,10 @@ using System.Text;
 
 namespace Feeder
 {
-    /// <summary>
-    /// Diff theo dòng, xuất ra hunk dạng unified giống git/Fork.
-    /// Không phụ thuộc UnityEditor để có thể test bằng console.
-    /// </summary>
     public static class FeederTextDiff
     {
         public const int DefaultContextLines = 3;
 
-        // Trần số bước Myers. Vượt trần thì fallback "thay cả file" thay vì ngốn hết RAM.
         private const int MaxEditDistance = 1500;
 
         private const int TabWidth = 4;
@@ -34,7 +29,6 @@ namespace Feeder
 
             string[] newLines = SplitLines(newText, out bool _);
 
-            // File mới: bỏ qua toàn bộ thuật toán, mọi dòng đều là thêm mới.
             if (originalText == null)
             {
                 List<FeederDiffLine> lines = new List<FeederDiffLine>(newLines.Length);
@@ -52,7 +46,6 @@ namespace Feeder
 
             if (!TryBuildChangeFlags(oldLines, newLines, out bool[] oldDeleted, out bool[] newInserted))
             {
-                // Diff quá lớn: hiển thị như thay toàn bộ nội dung.
                 result.BailedOut = true;
                 List<FeederDiffLine> lines = new List<FeederDiffLine>(oldLines.Length + newLines.Length);
                 for (int i = 0; i < oldLines.Length; i++)
@@ -104,9 +97,6 @@ namespace Feeder
             }
         }
 
-        // ---------- tách dòng ----------
-
-        // Tự tách thay vì Split('\n') để xử lý đúng cả CRLF, LF và CR đơn lẻ.
         public static string[] SplitLines(string text, out bool endsWithNewline)
         {
             endsWithNewline = false;
@@ -165,8 +155,6 @@ namespace Feeder
             };
         }
 
-        // Bắt buộc: script generated dùng '\t' cho field, mà IMGUI vẽ tab không đoán được,
-        // và mọi phép tính pixel của highlight dựa trên "1 ký tự = charWidth".
         private static string ExpandTabs(string value)
         {
             if (string.IsNullOrEmpty(value) || value.IndexOf('\t') < 0)
@@ -177,21 +165,16 @@ namespace Feeder
             return value.Replace("\t", new string(' ', TabWidth));
         }
 
-        // ---------- thuật toán ----------
-
         private static bool TryBuildChangeFlags(string[] oldLines, string[] newLines,
             out bool[] oldDeleted, out bool[] newInserted)
         {
             oldDeleted = new bool[oldLines.Length];
             newInserted = new bool[newLines.Length];
 
-            // Intern: sau bước này mọi so sánh là int == int thay vì string == string.
             Dictionary<string, int> pool = new Dictionary<string, int>(StringComparer.Ordinal);
             int[] oldIds = InternAll(oldLines, pool);
             int[] newIds = InternAll(newLines, pool);
 
-            // Cắt phần đầu/đuôi giống nhau. Với workload thật (thêm vài dòng vào file 40 dòng)
-            // bài toán co lại còn vài dòng nên thuật toán bên dưới gần như không chạy.
             int prefix = 0;
             int maxPrefix = Math.Min(oldIds.Length, newIds.Length);
             while (prefix < maxPrefix && oldIds[prefix] == newIds[prefix])
@@ -230,8 +213,6 @@ namespace Feeder
                 newInserted[prefix + i] = bInserted[i];
             }
 
-            // Đẩy các cụm thay đổi xuống dưới cùng khi tương đương — không có bước này,
-            // "thêm member vào cuối enum" sẽ hiện thành "thêm '}' rồi thêm member", đọc rất sai.
             SlideRuns(oldIds, oldDeleted);
             SlideRuns(newIds, newInserted);
             return true;
@@ -359,8 +340,6 @@ namespace Feeder
             return false;
         }
 
-        // Chỉ lưu dải k thực sự cần cho bước lùi (từ -(d+1) tới d+1) thay vì cả mảng V.
-        // Tổng bộ nhớ ~ D^2 thay vì D * (N+M).
         private static int[] Snapshot(int[] v, int offset, int d)
         {
             int size = 2 * (d + 1) + 1;
@@ -424,8 +403,6 @@ namespace Feeder
             }
         }
 
-        // ---------- dựng dòng + hunk ----------
-
         private static List<FeederDiffLine> BuildLines(string[] oldLines, string[] newLines,
             bool[] oldDeleted, bool[] newInserted)
         {
@@ -485,7 +462,6 @@ namespace Feeder
             for (int g = 0; g < changed.Count; g++)
             {
                 bool last = g == changed.Count - 1;
-                // Gộp hai cụm thay đổi khi khoảng "equal" ở giữa không dài hơn 2 lần context.
                 bool split = !last && changed[g + 1] - changed[g] - 1 > context * 2;
                 if (!last && !split)
                 {
@@ -531,7 +507,6 @@ namespace Feeder
                 }
             }
 
-            // Khi một phía không có dòng nào, unified diff dùng số dòng ĐỨNG TRƯỚC vị trí chèn.
             hunk.OldStart = oldStart >= 0 ? oldStart : PreviousNumber(all, lo, true);
             hunk.NewStart = newStart >= 0 ? newStart : PreviousNumber(all, lo, false);
             hunk.Header = BuildHeader(hunk);
@@ -582,8 +557,6 @@ namespace Feeder
             return count == 1 ? start.ToString() : $"{start},{count}";
         }
 
-        // ---------- highlight trong dòng ----------
-
         private static void ApplyWordHighlight(List<FeederDiffLine> lines)
         {
             int i = 0;
@@ -613,7 +586,6 @@ namespace Feeder
                     i++;
                 }
 
-                // Chỉ ghép khi hai cụm dài bằng nhau — ngoài ra việc ghép 1-1 là đoán mò.
                 if (i - addedStart != removedCount)
                 {
                     continue;
@@ -654,7 +626,6 @@ namespace Feeder
             int oldLength = a.Length - prefix - suffix;
             int newLength = b.Length - prefix - suffix;
 
-            // Khác quá nhiều thì đó là viết lại cả dòng, highlight chỉ thêm nhiễu.
             if (oldLength > a.Length * MaxHighlightRatio || newLength > b.Length * MaxHighlightRatio)
             {
                 return;
@@ -667,8 +638,6 @@ namespace Feeder
             lines[oldIndex] = oldLine;
             lines[newIndex] = newLine;
         }
-
-        // ---------- xuất unified diff ----------
 
         public static string ToUnifiedText(string assetPath, bool isNewFile, FeederDiffFileResult result)
         {

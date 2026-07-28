@@ -3,10 +3,6 @@ using UnityEngine;
 
 namespace Feeder
 {
-    /// <summary>
-    /// Màu + font + GUIStyle cho cửa sổ diff. Bảng màu chỉnh theo nền thật của Unity
-    /// (dark #383838, light #C2C2C2) nên dòng thêm/xoá đọc ra như sắc nền, không phải khối màu đặc.
-    /// </summary>
     public static class FeederDiffStyles
     {
         public const float LineHeight = 16f;
@@ -42,7 +38,6 @@ namespace Feeder
         public static Color RemovedBadge;
         public static Color BlockedText;
 
-        // Dùng lại đúng hai màu của bộ tool để cửa sổ mới nhìn cùng hệ với các tool khác.
         public static readonly Color HoverFill = new Color(0f, 1f, 1f, 0.12f);
         public static readonly Color AltRowFill = new Color(1f, 1f, 1f, 0.03f);
 
@@ -60,7 +55,6 @@ namespace Feeder
         private static bool cachedProSkin;
         private static bool initialized;
 
-        /// <summary>true khi có font mono thật — thiếu nó thì phải tắt highlight theo ký tự.</summary>
         public static bool HasMonoFont => monoFont != null;
 
         public static float CharWidth => charWidth > 0f ? charWidth : 7f;
@@ -79,7 +73,6 @@ namespace Feeder
             return style;
         }
 
-        /// <summary>Gọi ở đầu OnGUI. Tự dựng lại khi người dùng đổi theme Editor.</summary>
         public static void Refresh()
         {
             if (initialized && cachedProSkin == EditorGUIUtility.isProSkin && codeStyle != null)
@@ -146,7 +139,6 @@ namespace Feeder
             codeStyle = new GUIStyle(EditorStyles.label)
             {
                 fontSize = size,
-                // BẮT BUỘC false: code generated có "List<int>", rich text sẽ nuốt "<int>" thành tag.
                 richText = false,
                 wordWrap = false,
                 clipping = TextClipping.Clip,
@@ -207,7 +199,6 @@ namespace Feeder
             }
         }
 
-        // Font là UnityEngine.Object nên tạo trong OnGUI sẽ rò rỉ mỗi frame — cache static và huỷ khi reload.
         private static Font GetMonoFont(int size)
         {
             if (monoFont != null && monoFontSize == size)
