@@ -31,11 +31,49 @@ public class {0}Data : ScriptableObject
 
         public static void GenerateClass(string className, List<string> rawFields, string scriptPath)
         {
-            Type elementType = Assembly.GetExecutingAssembly().GetType(className);
-            if (elementType != null)
+            string classData = BuildScriptText(className, rawFields, out List<string> skippedColumns);
+            if (classData == null)
             {
-                EditorUtility.DisplayDialog("Generate Script", $"{elementType} is already existed", "close");
+                EditorUtility.DisplayDialog("Generate Script",
+                    skippedColumns.Count > 0
+                        ? string.Join("\n", skippedColumns.ToArray())
+                        : "Không sinh được script.", "close");
                 return;
+            }
+
+            if (skippedColumns.Count > 0)
+            {
+                string report = "Các cột sau bị bỏ qua / cần xem lại:\n" + string.Join("\n", skippedColumns.ToArray());
+                Debug.LogWarning($"[Feeder] {report}");
+                if (!EditorUtility.DisplayDialog("Generate Script", report, "Vẫn tạo script", "Huỷ"))
+                {
+                    return;
+                }
+            }
+
+            WriteScript($"{scriptPath}/{className}Data.cs", classData);
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+            Debug.Log($"Success !! {className} scripts is generated !!");
+        }
+
+        /// <summary>
+        /// Sinh nội dung file .cs mà KHÔNG chạm đĩa và KHÔNG hiện dialog — cảnh báo trả qua
+        /// <paramref name="skippedColumns"/> để cửa sổ xem trước hiện inline thay vì bắn dialog giữa vòng lặp.
+        /// </summary>
+        public static string BuildScriptText(string className, List<string> rawFields, out List<string> skippedColumns)
+        {
+            skippedColumns = new List<string>();
+            if (className.IsNullOrWhitespace())
+            {
+                skippedColumns.Add("  • Tên class (ô đầu tiên của hàng 1 trong sheet) đang trống");
+                return null;
+            }
+
+            if (rawFields == null || rawFields.Count == 0)
+            {
+                skippedColumns.Add("  • Không có cột nào để sinh field");
+                return null;
             }
 
             StringBuilder fieldBuilder = new StringBuilder();
@@ -44,13 +82,14 @@ public class {0}Data : ScriptableObject
                 string rawField = rawFields[i];
                 if (rawField.IsNullOrWhitespace())
                 {
-                    EditorUtility.DisplayDialog("Generate Script", $"Column {i + 1} is empty field", "close");
-                    break;
+                    // Chỉ bỏ đúng cột này — trước đây 'break' làm mất luôn mọi field phía sau.
+                    skippedColumns.Add($"  • Cột {i + 1}: header rỗng");
+                    continue;
                 }
 
                 if (!rawField.Contains("_"))
                 {
-                    EditorUtility.DisplayDialog("Generate Script", $"Column {i + 1} : {rawField} is invalid", "close");
+                    skippedColumns.Add($"  • Cột {i + 1} '{rawField}': thiếu '_' (phải là prefix_FieldName)");
                     continue;
                 }
 
@@ -69,7 +108,7 @@ public class {0}Data : ScriptableObject
                         {
                             if (FeederEnumUtils.GetEnumTypeByName(typeToken) == null)
                             {
-                                EditorUtility.DisplayDialog("Generate Script", $"Column {i + 1} : enum {typeToken} not found", "close");
+                                skippedColumns.Add($"  • Cột {i + 1} '{rawField}': không tìm thấy enum {typeToken} → tạm sinh ra string");
                             }
                             else
                             {
@@ -83,7 +122,7 @@ public class {0}Data : ScriptableObject
                             Type componentType = FeederDataAssetGenerator.GetTypeByName(typeToken);
                             if (componentType == null || !typeof(Component).IsAssignableFrom(componentType))
                             {
-                                EditorUtility.DisplayDialog("Generate Script", $"Column {i + 1} : component {typeToken} not found", "close");
+                                skippedColumns.Add($"  • Cột {i + 1} '{rawField}': không tìm thấy component {typeToken} → tạm sinh ra GameObject");
                             }
                             else
                             {
@@ -99,20 +138,53 @@ public class {0}Data : ScriptableObject
                     fieldType = GetTypeName(fieldType.Trim());
                 }
 
-                fieldBuilder.AppendLine(string.Format(FieldTemplate, fieldType, fieldName));
+                if (fieldType.IsNullOrWhitespace())
+                {
+                    // Prefix lạ -> GetTypeName trả rỗng -> trước đây sinh ra "public  Name;" làm script không compile được.
+                    skippedColumns.Add($"  • Cột {i + 1} '{rawField}': prefix không có trong bảng kiểu");
+                    continue;
+                }
+
+                fieldBuilder.AppendLine(string.Format(FieldTemplate, fieldType, fieldName.Trim()));
             }
 
             string listField = $"{className[0].ToString().ToLower()}{className.Substring(1)}s";
-            string classData = ScriptTemplate.Replace("{0}", className)
+
+            // Nối newline cuối để khớp hành vi StreamWriter.WriteLine trước đây; thiếu nó thì
+            // diff của mọi file đã generate sẽ báo đổi dòng cuối một cách vô cớ.
+            return ScriptTemplate.Replace("{0}", className)
                 .Replace("{1}", fieldBuilder.ToString())
-                .Replace("{2}", listField);
-            string filePath = scriptPath + $"/{className}Data.cs";
-            StreamWriter writer = File.CreateText(filePath);
-            writer.WriteLine(classData);
-            writer.Close();
-            AssetDatabase.SaveAssets();
-            AssetDatabase.Refresh();
-            Debug.Log($"Success !! {className} scripts is generated !!");
+                .Replace("{2}", listField) + Environment.NewLine;
+        }
+
+        public static void WriteScript(string filePath, string classData)
+        {
+            File.WriteAllText(filePath, classData, new UTF8Encoding(false));
+        }
+
+        // Tách header 'prefix_FieldName' hoặc 'prefix_FieldName:TypeToken' ra đúng tên field C# đã sinh.
+        // FeederDataAssetGenerator dùng lại hàm này để map cột theo TÊN thay vì theo chỉ số cột.
+        public static string GetFieldNameFromHeader(string rawField)
+        {
+            if (rawField.IsNullOrWhitespace())
+            {
+                return string.Empty;
+            }
+
+            int separatorIndex = rawField.IndexOf('_');
+            if (separatorIndex < 0)
+            {
+                return string.Empty;
+            }
+
+            string fieldName = rawField.Substring(separatorIndex + 1);
+            int typeTokenIndex = fieldName.IndexOf(':');
+            if (typeTokenIndex >= 0)
+            {
+                fieldName = fieldName.Substring(0, typeTokenIndex);
+            }
+
+            return fieldName.Trim();
         }
 
         private static string GetTypeName(string data)

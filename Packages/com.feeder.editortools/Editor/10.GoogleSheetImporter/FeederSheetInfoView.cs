@@ -169,6 +169,21 @@ namespace Feeder
         [FoldoutGroup("Sheet Data", true), HorizontalGroup("Sheet Data/GeneratedOutputs"), PropertyOrder(38), ShowInInspector, ReadOnly, HideLabel]
         private ScriptableObject GeneratedScriptableAssetPreview => _generatedScriptableAsset;
 
+        // Mở cửa sổ lớn để xem toàn bộ data — bảng trong inspector bị bó trong scroll view của TableList
+        // nên phóng to cửa sổ importer cũng không giúp gì.
+        [FoldoutGroup("Sheet Data", true), HorizontalGroup("Sheet Data/GeneratedOutputs"), PropertyOrder(39),
+         Button("Show Data", ButtonSizes.Medium), GUIColor(0.60f, 0.90f, 0.98f), EnableIf("@HasShowDataTarget"),
+         PropertyTooltip("Mở cửa sổ lớn hiển thị toàn bộ dữ liệu của tab đang chọn (chỉ để xem). " +
+                         "Cần Generate Assets trước vì cửa sổ đọc từ asset Raw{Tab}.asset.")]
+        private void ShowDataWindow()
+        {
+            // Asset có thể vừa được generate xong sau lần dựng menu tree gần nhất.
+            RefreshGeneratedOutputReferences();
+            FeederSheetDataWindow.Open(_generatedScriptableAsset, selectTab);
+        }
+
+        private bool HasShowDataTarget => _generatedScriptableAsset != null;
+
         [FoldoutGroup("Sheet Data", true), TableMatrix, ShowInInspector, HideLabel, PropertyOrder(40)]
         private string[,] TablePreview
         {
@@ -311,7 +326,91 @@ namespace Feeder
             EditorUtility.SetDirty(info);
         }
 
-        [ButtonGroup("Sheet Info/Script", 1), Button(ButtonSizes.Large)]
+        // Quét các cột s_Field:EnumType của tab đang chọn, tìm giá trị enum còn thiếu rồi mở cửa sổ diff xem trước.
+        [ButtonGroup("Sheet Info/Enum", 2), Button("Update Enum", ButtonSizes.Large),
+         GUIColor(0.52f, 0.88f, 0.62f), EnableIf("@CanUpdateEnum")]
+        public void UpdateEnum()
+        {
+            if (ScriptFolder.IsNullOrWhitespace())
+            {
+                infoBoxMessage = "Script Folder path is Null";
+                return;
+            }
+
+            if (selectTab.IsNullOrWhitespace())
+            {
+                infoBoxMessage = "No sheet is selected";
+                return;
+            }
+
+            List<FeederEnumColumnScan> scans = FeederEnumScanner.ScanEnumColumns(cells, rawFields, selectTab);
+            OpenEnumPreview(scans);
+        }
+
+        // Quét MỌI tab đã tải rồi gộp các cột trỏ về cùng enum lại thành một thay đổi duy nhất.
+        // Cần thiết vì cùng một enum có thể xuất hiện ở nhiều tab — quét từng tab sẽ append thiếu.
+        [ButtonGroup("Sheet Info/Enum", 2), Button("Update All Enums", ButtonSizes.Large),
+         GUIColor(0.72f, 0.87f, 0.76f), EnableIf("@CanUpdateAllEnums")]
+        public void UpdateAllEnums()
+        {
+            if (ScriptFolder.IsNullOrWhitespace())
+            {
+                infoBoxMessage = "Script Folder path is Null";
+                return;
+            }
+
+            if (sheetData == null || sheetData.Count == 0)
+            {
+                infoBoxMessage = "Chưa tải dữ liệu. Bấm 'Load Sheet' trước.";
+                return;
+            }
+
+            List<FeederEnumColumnScan> scans = new List<FeederEnumColumnScan>();
+            foreach (KeyValuePair<string, IList<IList<Object>>> pair in sheetData)
+            {
+                if (!BuildCells(pair.Key, pair.Value, out string[,] tabCells, out List<string> tabRawFields))
+                {
+                    continue;
+                }
+
+                scans.AddRange(FeederEnumScanner.ScanEnumColumns(tabCells, tabRawFields, pair.Key));
+            }
+
+            OpenEnumPreview(scans);
+        }
+
+        private void OpenEnumPreview(List<FeederEnumColumnScan> scans)
+        {
+            string sheetTypeName = cells != null && cells.GetLength(0) > 0 && cells.GetLength(1) > 0
+                ? cells[0, 0]
+                : string.Empty;
+            FeederEnumUpdatePlan plan =
+                FeederEnumUpdater.BuildPlan(scans, BuildAssetFolderPath(ScriptFolder), sheetTypeName);
+
+            if (!plan.HasApplicableChange)
+            {
+                infoBoxMessage = plan.Issues.Count > 0
+                    ? string.Join(" | ", plan.Issues.ToArray())
+                    : "Không có enum nào cần cập nhật.";
+                Debug.Log($"<color=cyan>[Update Enum] {infoBoxMessage}</color>");
+                return;
+            }
+
+            infoBoxMessage = string.Empty;
+            FeederChangeSet changeSet = FeederEnumUpdater.ToChangeSet(plan);
+            FeederDiffPreviewWindow.Open("Update Enum — Preview", changeSet, result =>
+            {
+                if (!result.Accepted || result.AcceptedFiles.Count == 0)
+                {
+                    return;
+                }
+
+                infoBoxMessage = FeederEnumUpdater.Apply(result.AcceptedFiles);
+            });
+        }
+
+        [ButtonGroup("Sheet Info/Generate", 3), Button("Generate Script", ButtonSizes.Large),
+         GUIColor(0.98f, 0.80f, 0.45f)]
         public void GenerateScript()
         {
             if (ScriptFolder.IsNullOrWhitespace())
@@ -326,11 +425,59 @@ namespace Feeder
                 return;
             }
 
-            string folderPath = $"{Application.dataPath}/{ScriptFolder}";
-            FeederScriptGenerator.GenerateClass(cells[0, 0], rawFields, folderPath);
+            string className = cells != null && cells.GetLength(0) > 0 && cells.GetLength(1) > 0 ? cells[0, 0] : null;
+            string newText = FeederScriptGenerator.BuildScriptText(className, rawFields, out List<string> warnings);
+            if (newText == null)
+            {
+                infoBoxMessage = string.Join(" | ", warnings.ToArray());
+                return;
+            }
+
+            string assetPath = $"{BuildAssetFolderPath(ScriptFolder)}/{className}Data.cs";
+            string originalText = FeederEnumSourceEditor.TryReadText(assetPath, out bool hadBom);
+
+            FeederFileChange file = new FeederFileChange
+            {
+                AssetPath = assetPath,
+                OriginalText = originalText,
+                OriginalHadBom = hadBom,
+                NewText = newText,
+            };
+            FeederChangeItem item = new FeederChangeItem
+            {
+                Title = $"class {className} / {className}Data",
+                Subtitle = $"{rawFields.Count} cột",
+            };
+            item.Warnings.AddRange(warnings);
+            file.Items.Add(item);
+
+            FeederChangeSet changeSet = new FeederChangeSet();
+            changeSet.Files.Add(file);
+
+            FeederDiffPreviewWindow.Open("Generate Script — Preview", changeSet, result =>
+            {
+                if (!result.Accepted || result.AcceptedFiles.Count == 0)
+                {
+                    return;
+                }
+
+                if (!FeederChangeWriter.CanWriteNow(out string reason))
+                {
+                    EditorUtility.DisplayDialog("Generate Script", reason, "close");
+                    return;
+                }
+
+                FeederWriteReport report = FeederChangeWriter.Write(result.AcceptedFiles);
+                infoBoxMessage = report.AnyWritten
+                    ? $"Đã ghi {className}Data.cs. Đợi compile xong rồi bấm 'Generate Assets'."
+                    : $"Không ghi được: {string.Join(" | ", report.Problems.ToArray())}";
+                Debug.Log($"<color=cyan>[Generate Script] {infoBoxMessage}</color>");
+                RefreshGeneratedOutputReferences();
+            });
         }
 
-        [ButtonGroup("Sheet Info/Script", 1), Button(ButtonSizes.Large)]
+        [ButtonGroup("Sheet Info/Generate", 3), Button("Generate Assets", ButtonSizes.Large),
+         GUIColor(0.98f, 0.80f, 0.45f)]
         public void GenerateAssets()
         {
             if (AssetFolder.IsNullOrWhitespace())
@@ -340,10 +487,18 @@ namespace Feeder
             }
 
             FeederDataAssetGenerator.GenerateClass(selectTab, cells, rawFields, AssetFolder, SpriteAssetFolder, PrefabFolder);
+            RefreshGeneratedOutputReferences();
         }
 
+        private bool CanUpdateEnum => !ScriptFolder.IsNullOrWhitespace() && !selectTab.IsNullOrWhitespace()
+                                                                        && cells != null && cells.GetLength(0) > 0
+                                                                        && cells.GetLength(1) > 2;
+
+        private bool CanUpdateAllEnums => !ScriptFolder.IsNullOrWhitespace() && sheetData != null && sheetData.Count > 0;
+
         // Tải lại workbook rồi regenerate asset cho MỌI tab đã có sẵn file asset (cập nhật hàng loạt).
-        [ButtonGroup("Sheet Info/Script", 1), Button("Generate All Assets", ButtonSizes.Large), GUIColor(0.98f, 0.80f, 0.55f)]
+        [ButtonGroup("Sheet Info/Generate", 3), Button("Generate All Assets", ButtonSizes.Large),
+         GUIColor(0.95f, 0.63f, 0.38f)]
         public void GenerateAllAssets()
         {
             if (AssetFolder.IsNullOrWhitespace())
@@ -403,8 +558,25 @@ namespace Feeder
             Debug.Log($"[Feeder] {infoBoxMessage}");
         }
 
-        [FoldoutGroup("Sheet Info", true, 0), Button(ButtonSizes.Large), GUIColor(0.91f, 0.98f, 0.50f), EnableIf("@SpreadsheetID != string.Empty"),
-         InfoBox("$infoBoxMessage", InfoMessageType.Warning, "@!string.IsNullOrEmpty(infoBoxMessage)")]
+        // Vẽ tay thay vì [InfoBox] trên LoadSheet: giờ LoadSheet nằm trong ButtonGroup ngang nên
+        // InfoBox sẽ bị bóp vào đúng cột của nút đó. Ở đây nó chiếm trọn chiều ngang, nằm dưới các hàng nút.
+        [FoldoutGroup("Sheet Info", true, 0), PropertyOrder(4), OnInspectorGUI]
+        private void DrawStatusMessage()
+        {
+            if (string.IsNullOrEmpty(infoBoxMessage))
+            {
+                return;
+            }
+
+            EditorGUILayout.Space(2f);
+            EditorGUILayout.HelpBox(infoBoxMessage, MessageType.Info);
+        }
+
+        // Bảng màu nút — mỗi họ màu là một giai đoạn của quy trình, đọc từ trên xuống:
+        //   xanh dương = đọc dữ liệu   |   xanh lá = thêm enum (an toàn)   |   vàng cam = ghi file
+        // Trong mỗi hàng, nút thao tác lẻ đậm màu hơn, nút "All" nhạt hơn để bớt tranh chú ý.
+        [ButtonGroup("Sheet Info/Load", 1), Button("Load Sheet", ButtonSizes.Large),
+         GUIColor(0.48f, 0.74f, 0.96f), EnableIf("@!string.IsNullOrEmpty(SpreadsheetID)")]
         public void LoadSheet()
         {
             try
@@ -445,8 +617,8 @@ namespace Feeder
         }
 
         // Chỉ tải + parse tab đang chọn (nhanh hơn Load Sheet vì không parse toàn workbook).
-        [FoldoutGroup("Sheet Info", true, 0), Button("Load This Sheet (Selected Tab)", ButtonSizes.Large),
-         GUIColor(0.60f, 0.90f, 0.98f), EnableIf("@SpreadsheetID != string.Empty")]
+        [ButtonGroup("Sheet Info/Load", 1), Button("Load This Tab", ButtonSizes.Large),
+         GUIColor(0.68f, 0.84f, 0.96f), EnableIf("@!string.IsNullOrEmpty(SpreadsheetID)")]
         public void LoadThisSheet()
         {
             try
