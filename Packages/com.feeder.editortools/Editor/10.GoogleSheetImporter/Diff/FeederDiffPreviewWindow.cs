@@ -102,16 +102,16 @@ namespace Feeder
         private void OnEnable()
         {
             // live là [NonSerialized] nên sau domain reload nó về false — instance đó chỉ còn là xác.
-            if (!live)
+            // CreateInstance() cũng gọi OnEnable TRƯỚC khi Open() kịp gán live = true, nên ở đây
+            // không phân biệt được xác với cửa sổ vừa tạo — phải kiểm tra lại live lúc delayCall chạy,
+            // khi Open() đã gán xong.
+            EditorApplication.delayCall += () =>
             {
-                EditorApplication.delayCall += () =>
+                if (this != null && !live)
                 {
-                    if (this != null)
-                    {
-                        Close();
-                    }
-                };
-            }
+                    Close();
+                }
+            };
         }
 
         private void OnDestroy()
@@ -220,6 +220,9 @@ namespace Feeder
             rows.Clear();
             maxLineChars = 0;
             truncated = false;
+
+            // Index cũ không còn trỏ đúng row sau khi dựng lại.
+            hoverRow = -1;
 
             for (int f = 0; f < changeSet.Files.Count; f++)
             {
@@ -400,7 +403,17 @@ namespace Feeder
             else if ((evt.keyCode == KeyCode.Return || evt.keyCode == KeyCode.KeypadEnter) && evt.control)
             {
                 evt.Use();
-                Apply();
+
+                // Nút Apply bị DisabledScope chặn khi chưa chọn file nào; phím tắt phải chặn y hệt,
+                // nếu không sẽ Complete() với AcceptedFiles rỗng và cửa sổ đóng im lặng.
+                if (SelectedCount() > 0)
+                {
+                    Apply();
+                }
+                else
+                {
+                    ShowNotification(new GUIContent("Chưa chọn file nào"));
+                }
             }
         }
 
@@ -463,19 +476,30 @@ namespace Feeder
 
             UpdateHover(viewport);
 
+            // Checkbox của item và foldout của file được vẽ NGAY TRONG vòng lặp dưới, và cả hai đều
+            // gọi RebuildRows() -> rows.Clear() + cấp phát rowTop mảng mới (thường ngắn hơn).
+            // first/last thì chỉ tính một lần, nên phải dừng vòng lặp ngay khi mảng bị thay,
+            // nếu không sẽ đọc quá biên và ném exception trước GUI.EndScrollView() -> lệch GUIClip stack.
+            float[] tops = rowTop;
             scroll = GUI.BeginScrollView(viewport, scroll, new Rect(0f, 0f, contentWidth, totalHeight));
             if (rows.Count > 0)
             {
                 int first = Mathf.Max(0, IndexAtY(scroll.y) - 1);
                 int last = Mathf.Min(rows.Count, IndexAtY(scroll.y + viewport.height) + 2);
-                for (int i = first; i < last; i++)
+                for (int i = first; i < last && rowTop == tops; i++)
                 {
-                    Rect rect = new Rect(0f, rowTop[i], contentWidth, rowTop[i + 1] - rowTop[i]);
+                    Rect rect = new Rect(0f, tops[i], contentWidth, tops[i + 1] - tops[i]);
                     DrawRow(rect, i, contentWidth);
                 }
             }
 
             GUI.EndScrollView();
+
+            // Cấu trúc đã đổi giữa chừng: frame này vẽ thiếu, xin vẽ lại ngay bằng số liệu mới.
+            if (rowTop != tops)
+            {
+                Repaint();
+            }
         }
 
         private void UpdateHover(Rect viewport)

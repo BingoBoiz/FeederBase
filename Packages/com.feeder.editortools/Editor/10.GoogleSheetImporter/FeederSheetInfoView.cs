@@ -237,8 +237,19 @@ namespace Feeder
         }
 
         private FeederGoogleSheetController googleSheetController;
-        private string infoBoxMessage;
         private FeederSheetInfo info;
+
+        // Update Enum / Generate Script ghi file .cs -> AssetDatabase.Refresh() -> recompile -> Odin
+        // dựng lại FeederSheetInfoView mới, nên field thường sẽ mất thông báo kết quả trước khi kịp vẽ
+        // (người dùng bấm Apply xong không thấy gì, tưởng tool hỏng). SessionState sống qua domain
+        // reload và tự sạch khi đóng Unity. Khoá theo sheetName để các sheet không lẫn thông báo.
+        private string StatusStateKey => "Feeder.GoogleSheetImporter.Status." + sheetName;
+
+        private string infoBoxMessage
+        {
+            get => SessionState.GetString(StatusStateKey, string.Empty);
+            set => SessionState.SetString(StatusStateKey, value ?? string.Empty);
+        }
 
         public FeederSheetInfoView(FeederSheetInfo sheetInfo)
         {
