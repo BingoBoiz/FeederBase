@@ -74,7 +74,7 @@ namespace Feeder
         [PropertySpace(SpaceBefore = 6, SpaceAfter = 2)]
         [TabGroup("RenameMode", "Change Pattern")]
         [LabelText("Output Pattern"), Tooltip("use {number}, {variant}, {start:step}, {EnumType} (numeric), {(s)EnumType} (string)")]
-        [ShowInInspector, OnValueChanged(nameof(SchedulePreviewRebuild))]
+        [ShowInInspector, OnValueChanged(nameof(MarkPatternPreviewStale))]
         public string outputPattern
         {
             get => FToolPrefs.GetString(nameof(FRenameTool), nameof(outputPattern), "");
@@ -88,7 +88,11 @@ namespace Feeder
         [System.NonSerialized] private string _lastAutoSeededOutput;
 
         [System.NonSerialized] private FAssetRevertService.RevertOperation _lastOp;
-        [System.NonSerialized] private bool _previewScheduled;
+
+        // Preview chỉ được build khi bấm nút Preview. Hai cờ này chỉ đánh dấu bảng đang hiển thị kết quả
+        // của input cũ — set cờ là toàn bộ việc chạy khi gõ, không có phân tích nào.
+        [System.NonSerialized] private bool _patternPreviewStale;
+        [System.NonSerialized] private bool _findReplacePreviewStale;
 
         [TabGroup("RenameMode", "Change Pattern")]
         [OnInspectorGUI, PropertyOrder(1)]
@@ -112,7 +116,15 @@ namespace Feeder
             RefreshInputPattern();
         }
 
+        [TabGroup("RenameMode", "Change Pattern")]
+        [Button("Preview", ButtonSizes.Medium), PropertyOrder(2.5f), EnableIf(nameof(CanApplyRename))]
+        private void PreviewRename()
+        {
+            RebuildPatternPreview();
+        }
+
         [TabGroup("RenameMode", "Change Pattern"), PropertyOrder(3)]
+        [InfoBox("Preview đang cũ — bấm Preview để cập nhật.", InfoMessageType.Warning, VisibleIf = nameof(_patternPreviewStale))]
         [ShowInInspector, TableList(IsReadOnly = true, NumberOfItemsPerPage = 10)]
         [LabelText("Preview")]
         private List<PreviewRow> patternPreview = new List<PreviewRow>();
@@ -178,7 +190,7 @@ namespace Feeder
         [PropertySpace(SpaceBefore = 10)]
         [TabGroup("RenameMode", "Find & Replace")]
         [LabelText("Find")]
-        [ShowInInspector, OnValueChanged(nameof(SchedulePreviewRebuild))]
+        [ShowInInspector, OnValueChanged(nameof(MarkFindReplacePreviewStale))]
         public string findString
         {
             get => FToolPrefs.GetString(nameof(FRenameTool), nameof(findString), "");
@@ -188,14 +200,22 @@ namespace Feeder
         [PropertySpace(SpaceBefore = 6, SpaceAfter = 6)]
         [TabGroup("RenameMode", "Find & Replace")]
         [LabelText("Replace With")]
-        [ShowInInspector, OnValueChanged(nameof(SchedulePreviewRebuild))]
+        [ShowInInspector, OnValueChanged(nameof(MarkFindReplacePreviewStale))]
         public string replaceString
         {
             get => FToolPrefs.GetString(nameof(FRenameTool), nameof(replaceString), "");
             set => FToolPrefs.SetString(nameof(FRenameTool), nameof(replaceString), value);
         }
 
+        [TabGroup("RenameMode", "Find & Replace")]
+        [Button("Preview", ButtonSizes.Medium), PropertyOrder(2.5f), EnableIf(nameof(CanApplyFindReplace))]
+        private void PreviewFindAndReplace()
+        {
+            RebuildFindReplacePreview();
+        }
+
         [TabGroup("RenameMode", "Find & Replace"), PropertyOrder(3)]
+        [InfoBox("Preview đang cũ — bấm Preview để cập nhật.", InfoMessageType.Warning, VisibleIf = nameof(_findReplacePreviewStale))]
         [ShowInInspector, TableList(IsReadOnly = true, NumberOfItemsPerPage = 10)]
         [LabelText("Preview")]
         private List<PreviewRow> findReplacePreview = new List<PreviewRow>();
@@ -294,7 +314,8 @@ namespace Feeder
             else
                 inputPattern = "";
             AutoSeedOutputPattern();
-            SchedulePreviewRebuild();
+            _patternPreviewStale = true;
+            _findReplacePreviewStale = true;
         }
 
         private void AutoSeedOutputPattern()
@@ -307,28 +328,26 @@ namespace Feeder
             _lastAutoSeededOutput = inputPattern;
         }
 
-        private void SchedulePreviewRebuild()
-        {
-            if (_previewScheduled) return;
-            _previewScheduled = true;
-            EditorApplication.delayCall += () =>
-            {
-                _previewScheduled = false;
-                RebuildPreviews();
-            };
-        }
+        private void MarkPatternPreviewStale() => _patternPreviewStale = true;
+
+        private void MarkFindReplacePreviewStale() => _findReplacePreviewStale = true;
 
         private const int PreviewRowCap = 200;
 
-        private void RebuildPreviews()
+        private void RebuildPatternPreview()
         {
             patternPreview.Clear();
             if (CanApplyRename)
                 CopyRowsCapped(BuildRenamePlan(TargetAssets, inputPattern, outputPattern).Rows, patternPreview);
+            _patternPreviewStale = false;
+        }
 
+        private void RebuildFindReplacePreview()
+        {
             findReplacePreview.Clear();
             if (CanApplyFindReplace)
                 CopyRowsCapped(BuildFindReplacePlan(TargetAssets, findString, replaceString ?? "").Rows, findReplacePreview);
+            _findReplacePreviewStale = false;
         }
 
         private static void CopyRowsCapped(List<PreviewRow> source, List<PreviewRow> destination)

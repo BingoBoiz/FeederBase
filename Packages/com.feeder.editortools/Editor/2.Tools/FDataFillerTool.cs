@@ -55,7 +55,8 @@ namespace Feeder
         {
             return "Tự điền field chứa nhiều asset (Dictionary<Enum,T>, Dictionary<string,T>, List<T>, T[], HashSet<T>) " +
                    "trên ScriptableObject / Component bằng asset trong Target Assets. Dictionary khớp mờ tên key với tên asset; " +
-                   "List/Array/HashSet nhận toàn bộ asset hợp kiểu. Preview Match xem trước; Fill Field ghi vào field đã chọn.";
+                   "List/Array/HashSet nhận toàn bộ asset hợp kiểu. Field chứa Component thì kéo prefab vào Target Assets — " +
+                   "tool tự lấy component ở prefab root. Preview Match xem trước; Fill Field ghi vào field đã chọn.";
         }
 
         // ── Target: SO, GameObject (chọn Component bên trong), hoặc Component kéo trực tiếp ──
@@ -198,7 +199,8 @@ namespace Feeder
             GUILayout.Space(2);
             FStylesUtils.DrawInfoBox(
                 "Target            SO / GameObject (chọn Component) / Component chứa field cần fill\n" +
-                "Target Assets     kéo asset nguồn vào đây (Texture2D tự tách sub-sprites khi field chứa Sprite)\n" +
+                "Target Assets     kéo asset nguồn vào đây (Texture2D tự tách sub-sprites khi field chứa Sprite;\n" +
+                "                  field chứa Component thì kéo prefab vào — tool tự lấy component ở prefab root)\n" +
                 "Field             Dictionary<Enum,T> / Dictionary<string,T> / List<T> / T[] / HashSet<T>\n" +
                 "Match Threshold   ngưỡng khớp mờ cho Dictionary (0–1), thường 0.8–0.9\n" +
                 "Override          Dictionary: ghi đè value đã có; List/Array/Set: replace thay vì append\n" +
@@ -383,11 +385,13 @@ namespace Feeder
 
         // ── Asset collection ──
 
-        // Accepts any asset assignable to elementType; Texture2D expands to Sprite sub-assets when filling Sprites.
+        // Accepts any asset assignable to elementType; Texture2D expands to Sprite sub-assets when filling Sprites,
+        // and a dragged prefab (always a GameObject) resolves to its root component when filling a Component type.
         private List<Object> CollectAssetsOfType(Type elementType)
         {
             var result = new List<Object>();
             var seen = new HashSet<Object>();
+            int prefabCount = 0;
             foreach (Object asset in TargetAssets)
             {
                 if (asset == null) continue;
@@ -404,11 +408,29 @@ namespace Feeder
                     foreach (Object sub in AssetDatabase.LoadAllAssetsAtPath(path))
                         if (sub is Sprite sprite && seen.Add(sprite))
                             result.Add(sprite);
+                    continue;
+                }
+
+                // Project window can only drag prefab roots (GameObject), never a component — so a Component-typed
+                // field is unfillable unless we resolve it here. Root only: matching compares component.name, which
+                // is the owning GameObject's name, so a component from a child would silently match the child's name.
+                if (typeof(Component).IsAssignableFrom(elementType) && asset is GameObject go)
+                {
+                    prefabCount++;
+                    Component comp = go.GetComponent(elementType);
+                    if (comp != null && seen.Add(comp)) result.Add(comp);
+                    continue;
                 }
             }
 
             if (result.Count == 0)
-                Debug.LogWarning($"[Feeder] Không tìm thấy asset kiểu {elementType.Name} nào trong Target Assets.");
+            {
+                if (prefabCount > 0)
+                    Debug.LogWarning($"[Feeder] Đã kéo {prefabCount} prefab vào Target Assets nhưng không prefab nào " +
+                                     $"có component {elementType.Name} ở root (component ở child không được lấy).");
+                else
+                    Debug.LogWarning($"[Feeder] Không tìm thấy asset kiểu {elementType.Name} nào trong Target Assets.");
+            }
             return result;
         }
 

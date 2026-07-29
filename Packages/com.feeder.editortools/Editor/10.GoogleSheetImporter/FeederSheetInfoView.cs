@@ -700,23 +700,19 @@ namespace Feeder
 
             if (selectTab.IsNullOrWhitespace() || !sheetNames.Contains(selectTab))
             {
-                infoBoxMessage = "Chọn 'selectTab' trong mục Sheet Data rồi bấm lại 'Load This Sheet'.";
+                infoBoxMessage = "Chọn 'selectTab' trong mục Sheet Data rồi bấm lại 'Load This Tab'.";
                 return;
             }
 
             infoBoxMessage = string.Empty;
-            List<string> only = new List<string> { selectTab };
-            googleSheetController.EnsureSheet(selectTab);
-            sheetData = googleSheetController.GetAllSheetValueRange(only);
             try
             {
-                info.strikethroughRows = googleSheetController.GetStrikethroughRowsPerSheet(only);
-                EditorUtility.SetDirty(info);
+                EnsureTabLoaded(selectTab);
             }
             catch (Exception ex)
             {
-                info.strikethroughRows = null;
-                Debug.LogWarning($"Không đọc được strikethrough: {ex.Message}");
+                EditorUtility.DisplayDialog("Load This Tab", $"{ex.Message}", "close");
+                return;
             }
 
             OnSheetSelected();
@@ -750,7 +746,7 @@ namespace Feeder
             }
             else
             {
-                infoBoxMessage = $"Tab '{selectTab}' chưa được tải. Bấm 'Load This Sheet' hoặc 'Load Sheet'.";
+                infoBoxMessage = $"Tab '{selectTab}' chưa được tải. Bấm 'Load This Tab' hoặc 'Load Sheet'.";
             }
         }
 
