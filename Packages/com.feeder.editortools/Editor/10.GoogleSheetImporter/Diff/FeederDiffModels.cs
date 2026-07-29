@@ -75,6 +75,12 @@ namespace Feeder
 
         public List<FeederChangeItem> Items = new List<FeederChangeItem>();
 
+        /// <summary>
+        /// Dòng nào trong nội dung mới chứa chuỗi này sẽ được tô nền vàng trong preview.
+        /// Để null nếu file không cần đánh dấu.
+        /// </summary>
+        public string WarningLineMarker;
+
         public Func<IReadOnlyList<FeederChangeItem>, string> Rebuild;
 
         public bool IsNewFile => OriginalText == null;

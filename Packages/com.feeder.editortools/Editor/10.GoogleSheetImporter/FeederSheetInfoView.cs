@@ -475,7 +475,7 @@ namespace Feeder
 
             string className = cells != null && cells.GetLength(0) > 0 && cells.GetLength(1) > 0 ? cells[0, 0] : null;
             string newText = FeederScriptGenerator.BuildScriptText(className, rawFields, Namespace,
-                out List<string> warnings);
+                out List<string> warnings, out List<FeederFieldFallback> fallbacks);
             if (newText == null)
             {
                 infoBoxMessage = string.Join(" | ", warnings.ToArray());
@@ -491,6 +491,7 @@ namespace Feeder
                 OriginalText = originalText,
                 OriginalHadBom = hadBom,
                 NewText = newText,
+                WarningLineMarker = FeederScriptGenerator.FallbackCommentMarker,
             };
             FeederChangeItem item = new FeederChangeItem
             {
@@ -520,9 +521,27 @@ namespace Feeder
                 infoBoxMessage = report.AnyWritten
                     ? $"Đã ghi {className}Data.cs. Đợi compile xong rồi bấm 'Generate Assets'."
                     : $"Không ghi được: {string.Join(" | ", report.Problems.ToArray())}";
+                if (report.AnyWritten && fallbacks.Count > 0)
+                {
+                    infoBoxMessage += $" ⚠ {fallbacks.Count} cột đang tạm là {DescribeFallbacks(fallbacks)} " +
+                                      "— tạo enum còn thiếu rồi Generate Script lại.";
+                }
+
                 Debug.Log($"<color=cyan>[Generate Script] {infoBoxMessage}</color>");
                 RefreshGeneratedOutputReferences();
             });
+        }
+
+        private static string DescribeFallbacks(List<FeederFieldFallback> fallbacks)
+        {
+            List<string> parts = new List<string>(fallbacks.Count);
+            for (int i = 0; i < fallbacks.Count; i++)
+            {
+                FeederFieldFallback fallback = fallbacks[i];
+                parts.Add($"{fallback.FieldName} ({fallback.TypeToken} → {fallback.FallbackType})");
+            }
+
+            return string.Join(", ", parts.ToArray());
         }
 
         [ButtonGroup("Sheet Info/Generate", 3), Button("Generate Assets", ButtonSizes.Large),

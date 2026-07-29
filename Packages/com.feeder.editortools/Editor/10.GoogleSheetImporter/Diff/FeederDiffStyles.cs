@@ -24,6 +24,7 @@ namespace Feeder
 
         public static Color AddedRow;
         public static Color RemovedRow;
+        public static Color WarnRow;
         public static Color AddedWord;
         public static Color RemovedWord;
         public static Color GutterBg;
@@ -92,6 +93,7 @@ namespace Feeder
             {
                 AddedRow = Hex(0x2E, 0x4B, 0x33);
                 RemovedRow = Hex(0x53, 0x30, 0x33);
+                WarnRow = Hex(0x5E, 0x4C, 0x1C);
                 AddedWord = Hex(0x3E, 0x74, 0x4A);
                 RemovedWord = Hex(0x7A, 0x3B, 0x40);
                 GutterBg = Hex(0x2E, 0x2E, 0x2E);
@@ -110,6 +112,7 @@ namespace Feeder
             {
                 AddedRow = Hex(0xDD, 0xF5, 0xDF);
                 RemovedRow = Hex(0xFB, 0xE0, 0xE0);
+                WarnRow = Hex(0xFF, 0xEF, 0xB8);
                 AddedWord = Hex(0xAB, 0xE9, 0xB3);
                 RemovedWord = Hex(0xF5, 0xB7, 0xB7);
                 GutterBg = Hex(0xD6, 0xD6, 0xD6);

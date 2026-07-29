@@ -654,11 +654,17 @@ namespace Feeder
 
             FeederDiffLine line = diffs[row.File].Hunks[row.Hunk].Lines[row.Line];
 
-            Color background = line.Op == FeederDiffOp.Added
-                ? FeederDiffStyles.AddedRow
-                : line.Op == FeederDiffOp.Removed
-                    ? FeederDiffStyles.RemovedRow
-                    : Color.clear;
+            // dòng bị hạ kiểu (enum không tồn tại → string) tô vàng để nổi hơn cả xanh added;
+            // dòng removed giữ nguyên đỏ vì đó là dấu vết cũ đang được gỡ đi
+            bool warn = line.Op != FeederDiffOp.Removed && IsWarningLine(row.File, line);
+
+            Color background = warn
+                ? FeederDiffStyles.WarnRow
+                : line.Op == FeederDiffOp.Added
+                    ? FeederDiffStyles.AddedRow
+                    : line.Op == FeederDiffOp.Removed
+                        ? FeederDiffStyles.RemovedRow
+                        : Color.clear;
 
             if (background.a > 0f)
             {
@@ -676,7 +682,7 @@ namespace Feeder
 
             float codeX = FeederDiffStyles.CodeOffsetX;
 
-            if (FeederDiffStyles.HasMonoFont && line.HlEnd > line.HlStart)
+            if (FeederDiffStyles.HasMonoFont && line.HlEnd > line.HlStart && !warn)
             {
                 float charWidth = FeederDiffStyles.CharWidth;
                 Rect wordRect = new Rect(
@@ -701,6 +707,18 @@ namespace Feeder
             GUI.Label(
                 new Rect(gutterX + FeederDiffStyles.GutterWidth * 2f, rect.y, FeederDiffStyles.SignWidth, rect.height),
                 FeederTextDiff.SignOf(line.Op).ToString(), FeederDiffStyles.Sign);
+        }
+
+        private bool IsWarningLine(int fileIndex, FeederDiffLine line)
+        {
+            string marker = changeSet.Files[fileIndex].WarningLineMarker;
+            if (string.IsNullOrEmpty(marker))
+            {
+                return false;
+            }
+
+            string text = line.RawText ?? line.Text;
+            return text != null && text.IndexOf(marker, StringComparison.Ordinal) >= 0;
         }
 
         private void DrawBottomBar()

@@ -11,6 +11,29 @@ using UnityEngine;
 
 namespace Feeder
 {
+    /// <summary>
+    /// Một cột mà tool KHÔNG resolve được kiểu như header yêu cầu nên phải hạ xuống kiểu mặc định
+    /// (ví dụ enum chưa tồn tại → string). Cột vẫn được sinh ra, không bị bỏ qua.
+    /// </summary>
+    public sealed class FeederFieldFallback
+    {
+        public int ColumnIndex;
+
+        public string RawHeader;
+
+        public string FieldName;
+
+        public string TypeToken;
+
+        public string FallbackType;
+
+        /// <summary>Lý do bằng tiếng Anh, đi thẳng vào comment của file .cs sinh ra.</summary>
+        public string CodeNote;
+
+        /// <summary>Hướng dẫn tiếng Việt, chỉ hiển thị trên UI.</summary>
+        public string Hint;
+    }
+
     public static class FeederScriptGenerator
     {
         private static readonly string ScriptTemplate = @"using UnityEngine;
@@ -29,6 +52,11 @@ public class {0}Data : ScriptableObject
 }";
 
         private static readonly string FieldTemplate = "\tpublic {0} {1};";
+
+        /// <summary>
+        /// Đánh dấu dòng field bị hạ kiểu. Preview dùng chuỗi này để tô nền vàng đúng dòng đó.
+        /// </summary>
+        public const string FallbackCommentMarker = "-> generated as";
 
         public static void GenerateClass(string className, List<string> rawFields, string scriptPath,
             string sheetNamespace)
@@ -62,7 +90,15 @@ public class {0}Data : ScriptableObject
         public static string BuildScriptText(string className, List<string> rawFields, string sheetNamespace,
             out List<string> skippedColumns)
         {
+            return BuildScriptText(className, rawFields, sheetNamespace, out skippedColumns,
+                out List<FeederFieldFallback> _);
+        }
+
+        public static string BuildScriptText(string className, List<string> rawFields, string sheetNamespace,
+            out List<string> skippedColumns, out List<FeederFieldFallback> fallbacks)
+        {
             skippedColumns = new List<string>();
+            fallbacks = new List<FeederFieldFallback>();
             if (className.IsNullOrWhitespace())
             {
                 skippedColumns.Add("  • Tên class (ô đầu tiên của hàng 1 trong sheet) đang trống");
@@ -94,6 +130,7 @@ public class {0}Data : ScriptableObject
                 string fieldType = rawField.Substring(0, rawField.IndexOf('_'));
                 string fieldName = rawField.Substring(rawField.IndexOf('_') + 1);
                 bool resolvedTypeName = false;
+                FeederFieldFallback fallback = null;
                 if (fieldName.Contains(":"))
                 {
                     string[] typedParts = fieldName.Split(':');
@@ -114,8 +151,8 @@ public class {0}Data : ScriptableObject
                             }
                             else
                             {
-                                skippedColumns.Add(DescribeUnresolvedEnum(i, rawField, typeToken, sheetNamespace,
-                                    status, ambiguous));
+                                fallback = BuildEnumFallback(i, rawField, fieldName, typeToken, sheetNamespace,
+                                    status, ambiguous);
                             }
                         }
                         else if (typeTag == "pref")
@@ -124,13 +161,17 @@ public class {0}Data : ScriptableObject
                             Type componentType = FeederDataAssetGenerator.GetTypeByName(typeToken);
                             if (componentType == null || !typeof(Component).IsAssignableFrom(componentType))
                             {
-                                skippedColumns.Add($"  • Cột {i + 1} '{rawField}': không tìm thấy component {typeToken} → tạm sinh ra GameObject");
+                                fallback = BuildMissingComponentFallback(i, rawField, fieldName, typeToken);
                             }
                             else
                             {
                                 resolvedTypeName = true;
                                 fieldType = ToCSharpTypeName(componentType);
                             }
+                        }
+                        else
+                        {
+                            fallback = BuildUnsupportedTokenFallback(i, rawField, fieldName, typeToken, typeTag);
                         }
                     }
                 }
@@ -146,7 +187,17 @@ public class {0}Data : ScriptableObject
                     continue;
                 }
 
-                fieldBuilder.AppendLine(string.Format(FieldTemplate, fieldType, fieldName.Trim()));
+                string trailingComment = string.Empty;
+                if (fallback != null)
+                {
+                    // kiểu thật sự sinh ra chỉ biết sau khi GetTypeName chạy xong
+                    fallback.FallbackType = fieldType;
+                    skippedColumns.Add(fallback.Hint);
+                    fallbacks.Add(fallback);
+                    trailingComment = $" // {fallback.CodeNote} {FallbackCommentMarker} {fieldType} instead";
+                }
+
+                fieldBuilder.AppendLine(string.Format(FieldTemplate, fieldType, fieldName.Trim()) + trailingComment);
             }
 
             string listField = $"{className[0].ToString().ToLower()}{className.Substring(1)}s";
@@ -165,28 +216,81 @@ public class {0}Data : ScriptableObject
             return type.FullName?.Replace('+', '.') ?? type.Name;
         }
 
-        private static string DescribeUnresolvedEnum(int columnIndex, string rawField, string typeToken,
-            string sheetNamespace, FeederEnumResolveStatus status, List<Type> ambiguous)
+        private static FeederFieldFallback BuildEnumFallback(int columnIndex, string rawField, string fieldName,
+            string typeToken, string sheetNamespace, FeederEnumResolveStatus status, List<Type> ambiguous)
         {
             string head = $"  • Cột {columnIndex + 1} '{rawField}': ";
+            string scope = FeederEnumUtils.DescribeScope(sheetNamespace);
+            string note;
+            string hint;
+
             if (status == FeederEnumResolveStatus.Ambiguous)
             {
                 List<string> names = ambiguous.ConvertAll(x => x.FullName?.Replace('+', '.'));
-                return head + $"'{typeToken}' trùng tên ở nhiều nơi ({string.Join(", ", names)}) → tạm sinh ra string. " +
+                note = $"enum '{typeToken}' is ambiguous";
+                hint = head + $"'{typeToken}' trùng tên ở nhiều nơi ({string.Join(", ", names)}) → tạm sinh ra string. " +
                        "Ghi tên đầy đủ trong header sheet.";
             }
-
-            List<Type> elsewhere = FeederEnumUtils.FindEnumsOutsideScope(typeToken, sheetNamespace);
-            if (elsewhere.Count > 0)
+            else
             {
-                List<string> names = elsewhere.ConvertAll(x => x.FullName?.Replace('+', '.'));
-                return head + $"không tìm thấy enum '{typeToken}' ở {FeederEnumUtils.DescribeScope(sheetNamespace)} " +
-                       $"→ tạm sinh ra string. Nó đang nằm ở: {string.Join(", ", names)} — đặt Namespace của sheet " +
-                       $"cho khớp, hoặc ghi tên đầy đủ trong header (ví dụ {rawField.Replace(typeToken, names[0])}).";
+                List<Type> elsewhere = FeederEnumUtils.FindEnumsOutsideScope(typeToken, sheetNamespace);
+                if (elsewhere.Count > 0)
+                {
+                    List<string> names = elsewhere.ConvertAll(x => x.FullName?.Replace('+', '.'));
+                    note = $"enum '{typeToken}' does not exist here";
+                    hint = head + $"không tìm thấy enum '{typeToken}' ở {scope} → tạm sinh ra string. " +
+                           $"Nó đang nằm ở: {string.Join(", ", names)} — đặt Namespace của sheet cho khớp, " +
+                           $"hoặc ghi tên đầy đủ trong header (ví dụ {rawField.Replace(typeToken, names[0])}).";
+                }
+                else
+                {
+                    note = $"enum '{typeToken}' does not exist";
+                    hint = head + $"không tìm thấy enum '{typeToken}' ở {scope} → tạm sinh ra string. " +
+                           "Bấm Update Enum trước để tạo nó.";
+                }
             }
 
-            return head + $"không tìm thấy enum '{typeToken}' ở {FeederEnumUtils.DescribeScope(sheetNamespace)} " +
-                   "→ tạm sinh ra string. Bấm Update Enum trước để tạo nó.";
+            return new FeederFieldFallback
+            {
+                ColumnIndex = columnIndex,
+                RawHeader = rawField,
+                FieldName = fieldName.Trim(),
+                TypeToken = typeToken,
+                CodeNote = note,
+                Hint = hint,
+            };
+        }
+
+        private static FeederFieldFallback BuildMissingComponentFallback(int columnIndex, string rawField,
+            string fieldName, string typeToken)
+        {
+            return new FeederFieldFallback
+            {
+                ColumnIndex = columnIndex,
+                RawHeader = rawField,
+                FieldName = fieldName.Trim(),
+                TypeToken = typeToken,
+                CodeNote = $"component '{typeToken}' was not found",
+                Hint = $"  • Cột {columnIndex + 1} '{rawField}': không tìm thấy component {typeToken} " +
+                       "→ tạm sinh ra GameObject.",
+            };
+        }
+
+        private static FeederFieldFallback BuildUnsupportedTokenFallback(int columnIndex, string rawField,
+            string fieldName, string typeToken, string typeTag)
+        {
+            return new FeederFieldFallback
+            {
+                ColumnIndex = columnIndex,
+                RawHeader = rawField,
+                FieldName = fieldName.Trim(),
+                TypeToken = typeToken,
+                CodeNote = $"prefix '{typeTag}' does not support the ':{typeToken}' token " +
+                           "(only 's' for enums and 'pref' for components do)",
+                Hint = $"  • Cột {columnIndex + 1} '{rawField}': prefix '{typeTag}' không hỗ trợ token " +
+                       $"':{typeToken}' (chỉ 's' cho enum và 'pref' cho component) → token bị bỏ qua, " +
+                       "sinh ra kiểu mặc định của prefix.",
+            };
         }
 
         private static string WrapInNamespace(string generated, string ns)
