@@ -16,7 +16,6 @@ namespace Feeder
 
             [TableColumnWidth(80, Resizable = false)]
             [ReadOnly]
-            [SuffixLabel("%")]
             [DisplayAsString]
             public string Score;
 
@@ -28,6 +27,11 @@ namespace Feeder
         {
             return "Khớp mờ TargetAssets với các giá trị enum theo tên. Bỏ qua hoa/thường, ký tự đặc biệt, đảo thứ tự token và lỗi gõ. " +
                    "Ví dụ: enum 'Jewelry_Flower_Choker' khớp asset 'flowe_choker_jewelry' ở mức ~95%. " +
+                   "Ngưỡng % chia theo độ dài tên nên hụt với tên ngắn — bấm icon cạnh label để đổi sang ngưỡng theo số ký tự lệch (gợi ý 1–3), " +
+                   "lúc đó cột Score hiện 'Δn' = số ký tự sai. " +
+                   "Dải Match Strategy: tắt 'Fuzzy' để chỉ gán khi tên giống hệt từng ký tự (dòng ngưỡng ẩn đi); " +
+                   "tắt 'Unique Asset' để nhiều enum dùng chung một asset; " +
+                   "bật 'Fill All' thì enum dưới ngưỡng vẫn nhận asset tốt nhất còn lại và dòng bị gán ép có dấu * ở cột Score. " +
                    "Điểm số vẫn hiện khi dưới ngưỡng để bạn tinh chỉnh. Cột Asset sửa được để chỉnh tay.";
         }
 
@@ -41,15 +45,11 @@ namespace Feeder
             set => FToolPrefs.SetString(nameof(FCompareStringTool), nameof(_selectedEnumTypeName), value);
         }
 
-        [PropertySpace(SpaceBefore = 6)]
-        [LabelText("Match Threshold (0–1)")]
-        [PropertyRange(0f, 1f)]
-        [ShowInInspector]
-        private float _matchThreshold
-        {
-            get => FToolPrefs.GetFloat(nameof(FCompareStringTool), nameof(_matchThreshold), 0.9f);
-            set => FToolPrefs.SetFloat(nameof(FCompareStringTool), nameof(_matchThreshold), value);
-        }
+        private const float DefaultThresholdPercent = 0.9f;
+
+        [OnInspectorGUI]
+        private void DrawMatchThreshold()
+            => FMatchThresholdGUI.Draw(nameof(FCompareStringTool), DefaultThresholdPercent);
 
         [PropertySpace(SpaceBefore = 10)]
         [ShowIf(nameof(HasRows))]
@@ -70,51 +70,26 @@ namespace Feeder
             if (TargetAssets == null)
                 throw new InvalidOperationException("TargetAssets is null.");
 
+            FMatchThreshold threshold = FMatchThreshold.Load(nameof(FCompareStringTool), DefaultThresholdPercent);
+
             _rows ??= new List<MatchRow>();
             _rows.Clear();
 
-            var assetNormalized = new string[TargetAssets.Count];
+            List<string> enumNames = FEnumTypeUtils.GetMatchableMemberNames(enumType);
+            var assetNames = new string[TargetAssets.Count];
             for (int i = 0; i < TargetAssets.Count; i++)
-                assetNormalized[i] = TargetAssets[i] != null ? FuzzyMatchUtils.Normalize(TargetAssets[i].name) : null;
+                assetNames[i] = TargetAssets[i] != null ? TargetAssets[i].name : null;
 
-            var usedIndices = new HashSet<int>();
-            var enumValues = System.Enum.GetValues(enumType);
+            FMatchAssign.Entry[] entries = FMatchAssign.Run(enumNames, assetNames, threshold);
 
-            for (int i = 0; i < enumValues.Length; i++)
+            for (int i = 0; i < enumNames.Count; i++)
             {
-                object enumVal = enumValues.GetValue(i);
-                string enumName = enumVal?.ToString() ?? "";
-                if (FEnumTypeUtils.ShouldSkipEnumMember(enumName))
-                    continue;
-
-                string normalizedEnum = FuzzyMatchUtils.Normalize(enumName);
-
-                int bestIndex = -1;
-                float bestScore = 0f;
-
-                for (int j = 0; j < TargetAssets.Count; j++)
-                {
-                    if (usedIndices.Contains(j) || assetNormalized[j] == null) continue;
-                    float score = FuzzyMatchUtils.Similarity(normalizedEnum, assetNormalized[j]);
-                    if (score > bestScore)
-                    {
-                        bestScore = score;
-                        bestIndex = j;
-                    }
-                }
-
-                UnityEngine.Object matchedAsset = null;
-                if (bestIndex >= 0 && bestScore >= _matchThreshold)
-                {
-                    matchedAsset = TargetAssets[bestIndex];
-                    usedIndices.Add(bestIndex);
-                }
-
+                FMatchAssign.Entry entry = entries[i];
                 _rows.Add(new MatchRow
                 {
-                    EnumName = enumName,
-                    Score = bestScore > 0f ? $"{bestScore * 100f:F1}" : "—",
-                    Asset = matchedAsset,
+                    EnumName = enumNames[i],
+                    Score = entry.HasScore ? entry.Score.Text + (entry.Forced ? "*" : "") : "—",
+                    Asset = entry.AssetIndex >= 0 ? TargetAssets[entry.AssetIndex] : null,
                 });
             }
         }

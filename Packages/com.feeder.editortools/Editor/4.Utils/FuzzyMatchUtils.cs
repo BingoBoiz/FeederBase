@@ -4,6 +4,26 @@ using System.Text.RegularExpressions;
 
 namespace Feeder
 {
+    /// <summary>
+    /// Một tên tham gia khớp, giữ sẵn cả hai dạng: <see cref="Raw"/> cho chế độ so tuyệt đối,
+    /// <see cref="Normalized"/> cho khớp mờ. Normalize một lần ở đây để vòng lặp so cặp
+    /// (O(key × asset)) không phải normalize lại.
+    /// </summary>
+    public readonly struct FMatchName
+    {
+        public readonly string Raw;
+        public readonly string Normalized;
+
+        public FMatchName(string raw)
+        {
+            Raw = raw ?? "";
+            Normalized = FuzzyMatchUtils.Normalize(raw);
+        }
+
+        /// <summary>Tên rỗng = slot không tham gia khớp (asset null, key bị skip).</summary>
+        public bool IsEmpty => string.IsNullOrEmpty(Raw);
+    }
+
     public static class FuzzyMatchUtils
     {
         // Splits PascalCase / camelCase boundaries: "FlowerChoker" → ["Flower", "Choker"]
@@ -42,16 +62,14 @@ namespace Feeder
         }
 
         /// <summary>
-        /// Returns similarity in [0, 1] between two already-normalized strings.
-        /// Uses Levenshtein distance: 1 - dist / max(len_a, len_b).
+        /// Số ký tự lệch (Levenshtein distance) giữa hai string đã normalize. 0 = giống hệt.
+        /// Tỷ lệ giống 0..1 (1 - dist / max(len)) tính trong <see cref="FMatchThreshold.Evaluate"/>.
         /// </summary>
-        public static float Similarity(string a, string b)
+        public static int Distance(string a, string b)
         {
-            if (string.IsNullOrEmpty(a) && string.IsNullOrEmpty(b)) return 1f;
-            if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return 0f;
-            int dist = LevenshteinDistance(a, b);
-            int maxLen = Math.Max(a.Length, b.Length);
-            return 1f - (float)dist / maxLen;
+            if (string.IsNullOrEmpty(a)) return b?.Length ?? 0;
+            if (string.IsNullOrEmpty(b)) return a.Length;
+            return LevenshteinDistance(a, b);
         }
 
         // Two-row rolling Levenshtein (O(n) space instead of O(m*n))

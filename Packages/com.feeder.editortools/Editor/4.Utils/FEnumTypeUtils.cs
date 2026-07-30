@@ -33,6 +33,22 @@ namespace Feeder
             return string.Equals(enumMemberName, "None", StringComparison.OrdinalIgnoreCase);
         }
 
+        /// <summary>
+        /// Tên các member tham gia khớp tên, đã bỏ 'None'. Giữ thứ tự khai báo enum.
+        /// </summary>
+        public static List<string> GetMatchableMemberNames(Type enumType)
+        {
+            Array values = Enum.GetValues(enumType);
+            var names = new List<string>(values.Length);
+            for (int i = 0; i < values.Length; i++)
+            {
+                string name = values.GetValue(i)?.ToString() ?? "";
+                if (ShouldSkipEnumMember(name)) continue;
+                names.Add(name);
+            }
+            return names;
+        }
+
         public static IEnumerable<ValueDropdownItem<string>> GetEnumTypeDropdown()
         {
             if (s_cachedDropdownItems == null)

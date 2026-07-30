@@ -28,7 +28,7 @@ namespace Feeder
             public Object Asset;
         }
 
-        private enum MatchStatus { Matched, FallbackDefault, Skipped }
+        private enum MatchStatus { Matched, Forced, FallbackDefault, Skipped }
 
         private enum FieldKind { EnumDict, StringDict, ListLike, Array, HashSet }
 
@@ -48,6 +48,7 @@ namespace Feeder
             public string KeyName;
             public Object AssignedAsset;
             public float BestScore;
+            public string ScoreText;  // "95.0%" hoặc "Δ2" tuỳ chế độ ngưỡng
             public MatchStatus Status;
         }
 
@@ -152,16 +153,15 @@ namespace Feeder
             set => FToolPrefs.SetString(nameof(FDataFillerTool), nameof(SelectedFieldName), value);
         }
 
+        private const float DefaultThresholdPercent = 0.8f;
+
+        // [ShowIf] không áp dụng được cho [OnInspectorGUI] nên guard ngay trong thân method.
         [PropertyOrder(-870)]
-        [PropertySpace(SpaceBefore = 6)]
-        [ShowIf(nameof(SelectedFieldIsDict))]
-        [LabelText("Match Threshold (0–1)")]
-        [PropertyRange(0f, 1f)]
-        [ShowInInspector]
-        private float _matchThreshold
+        [OnInspectorGUI]
+        private void DrawMatchThreshold()
         {
-            get => FToolPrefs.GetFloat(nameof(FDataFillerTool), nameof(_matchThreshold), 0.8f);
-            set => FToolPrefs.SetFloat(nameof(FDataFillerTool), nameof(_matchThreshold), value);
+            if (!SelectedFieldIsDict) return;
+            FMatchThresholdGUI.Draw(nameof(FDataFillerTool), DefaultThresholdPercent);
         }
 
         [PropertyOrder(-860)]
@@ -202,10 +202,19 @@ namespace Feeder
                 "Target Assets     kéo asset nguồn vào đây (Texture2D tự tách sub-sprites khi field chứa Sprite;\n" +
                 "                  field chứa Component thì kéo prefab vào — tool tự lấy component ở prefab root)\n" +
                 "Field             Dictionary<Enum,T> / Dictionary<string,T> / List<T> / T[] / HashSet<T>\n" +
-                "Match Threshold   ngưỡng khớp mờ cho Dictionary (0–1), thường 0.8–0.9\n" +
+                "Match Threshold   ngưỡng khớp mờ cho Dictionary (0–1), thường 0.8–0.9. Bấm icon cạnh label để đổi\n" +
+                "                  sang ngưỡng theo số ký tự lệch (gợi ý 1–3) khi key/tên asset ngắn — % chia\n" +
+                "                  theo độ dài nên tên 4 ký tự lệch 2 đã tụt xuống ~50%\n" +
+                "Match Strategy    Fuzzy         tắt = chỉ gán khi tên asset giống hệt tên key từng ký tự.\n" +
+                "                                Dòng ngưỡng ẩn đi, cột Score hiện 'exact' — hoặc '≠case'\n" +
+                "                                nếu chỉ khác hoa/thường / thứ tự token\n" +
+                "                  Unique Asset  mỗi asset chỉ gán cho 1 key; tắt = nhiều key dùng chung 1 asset\n" +
+                "                  Fill All      key dưới ngưỡng vẫn nhận asset tốt nhất còn lại (giả định số\n" +
+                "                                asset ≥ số key). Ngưỡng thành mốc tin cậy: dòng gán ép có dấu *\n" +
+                "                                ở cột Score. Member None không bị gán ép, vẫn rơi về Asset Default\n" +
                 "Override          Dictionary: ghi đè value đã có; List/Array/Set: replace thay vì append\n" +
                 "Asset Default     asset dự phòng cho key không khớp (Dictionary)\n" +
-                "Preview Match     xem bảng key → asset kèm % khớp trước khi ghi\n" +
+                "Preview Match     xem bảng key → asset kèm % khớp (hoặc Δn = số ký tự lệch) trước khi ghi\n" +
                 "Fill Field        ghi kết quả vào field đã chọn"
             );
             GUILayout.Space(4);
@@ -464,7 +473,7 @@ namespace Feeder
                         assets.Sort((a, b) => EditorUtility.NaturalCompare(a.name, b.name));
                         return assets.Select(a => new KeyMatchResult
                         {
-                            Key = a.name, KeyName = a.name, AssignedAsset = a, BestScore = 1f, Status = MatchStatus.Matched,
+                            Key = a.name, KeyName = a.name, AssignedAsset = a, BestScore = 1f, ScoreText = "100.0%", Status = MatchStatus.Matched,
                         }).ToList();
                     }
                     object[] keys = dict.Keys.Cast<object>().ToArray();
@@ -484,23 +493,14 @@ namespace Feeder
             return null;
         }
 
-        // Globally-optimal greedy assignment:
-        // 1. Score all (key, asset) pairs
-        // 2. Sort descending by score
-        // 3. Assign from highest score — skip if key or asset already taken
-        // This ensures the best match globally wins regardless of key order.
+        // Gán qua FMatchAssign (greedy toàn cục, dùng chung với FCompareStringTool/FSortOrderTool).
+        // Key bị skip vì Override off được truyền tên null nên không tham gia khớp, nhưng vẫn giữ
+        // đúng chỗ trong mảng để dựng row theo thứ tự key.
         private List<KeyMatchResult> ComputeDictMatches(object[] keys, string[] keyNames, List<Object> assets, IDictionary dictionary, Object fallback)
         {
+            FMatchThreshold threshold = FMatchThreshold.Load(nameof(FDataFillerTool), DefaultThresholdPercent);
+
             int keyCount = keys.Length;
-            int assetCount = assets.Count;
-
-            var normalizedKeys = new string[keyCount];
-            for (int i = 0; i < keyCount; i++)
-                normalizedKeys[i] = FuzzyMatchUtils.Normalize(keyNames[i]);
-
-            var normalizedAssets = new string[assetCount];
-            for (int i = 0; i < assetCount; i++)
-                normalizedAssets[i] = assets[i] != null ? FuzzyMatchUtils.Normalize(assets[i].name) : null;
 
             // Determine which keys to skip (override disabled + already has a non-null value)
             var skipAssets = new Object[keyCount];
@@ -514,41 +514,17 @@ namespace Feeder
                 }
             }
 
-            // Build all (keyIdx, assetIdx, score) pairs for non-skipped keys
-            var candidates = new List<(int keyIdx, int assetIdx, float score)>();
-            for (int k = 0; k < keyCount; k++)
-            {
-                if (skipAssets[k] != null) continue;
-                for (int a = 0; a < assetCount; a++)
-                {
-                    if (normalizedAssets[a] == null) continue;
-                    float score = FuzzyMatchUtils.Similarity(normalizedKeys[k], normalizedAssets[a]);
-                    candidates.Add((k, a, score));
-                }
-            }
+            var matchKeyNames = new string[keyCount];
+            for (int i = 0; i < keyCount; i++)
+                matchKeyNames[i] = skipAssets[i] != null ? null : keyNames[i];
 
-            // Track best raw score per key for display on fallback rows
-            var bestRawScores = new float[keyCount];
-            foreach ((int k, int _, float score) in candidates)
-                if (score > bestRawScores[k])
-                    bestRawScores[k] = score;
+            // Dùng '!= null' của UnityEngine.Object (không dùng ?.) để bắt cả reference đã bị destroy
+            // hoặc missing — tên null báo cho FMatchAssign biết slot này không tham gia khớp.
+            var assetNames = new string[assets.Count];
+            for (int i = 0; i < assets.Count; i++)
+                assetNames[i] = assets[i] != null ? assets[i].name : null;
 
-            // Sort descending — highest-confidence pairs assigned first
-            candidates.Sort((x, y) => y.score.CompareTo(x.score));
-
-            var assignedKeys = new HashSet<int>();
-            var assignedAssets = new HashSet<int>();
-            var assignments = new Dictionary<int, (int assetIdx, float score)>();
-
-            foreach ((int k, int a, float score) in candidates)
-            {
-                if (score < _matchThreshold) break;
-                if (assignedKeys.Contains(k) || assignedAssets.Contains(a)) continue;
-
-                assignments[k] = (a, score);
-                assignedKeys.Add(k);
-                assignedAssets.Add(a);
-            }
+            FMatchAssign.Entry[] entries = FMatchAssign.Run(matchKeyNames, assetNames, threshold, BuildForceFillMask(keyNames));
 
             // Build result in key order
             var results = new List<KeyMatchResult>(keyCount);
@@ -560,16 +536,36 @@ namespace Feeder
                     continue;
                 }
 
-                if (assignments.TryGetValue(i, out (int assetIdx, float score) match))
+                FMatchAssign.Entry entry = entries[i];
+                if (entry.AssetIndex >= 0)
                 {
-                    results.Add(new KeyMatchResult { Key = keys[i], KeyName = keyNames[i], AssignedAsset = assets[match.assetIdx], BestScore = match.score, Status = MatchStatus.Matched });
+                    results.Add(new KeyMatchResult { Key = keys[i], KeyName = keyNames[i], AssignedAsset = assets[entry.AssetIndex], BestScore = entry.Score.Similarity, ScoreText = entry.Score.Text, Status = entry.Forced ? MatchStatus.Forced : MatchStatus.Matched });
                     continue;
                 }
 
-                results.Add(new KeyMatchResult { Key = keys[i], KeyName = keyNames[i], AssignedAsset = fallback, BestScore = bestRawScores[i], Status = MatchStatus.FallbackDefault });
+                results.Add(new KeyMatchResult { Key = keys[i], KeyName = keyNames[i], AssignedAsset = fallback, BestScore = entry.Score.Similarity, ScoreText = entry.HasScore ? entry.Score.Text : "—", Status = MatchStatus.FallbackDefault });
             }
 
             return results;
+        }
+
+        // Khác 2 tool kia, tool này giữ 'None' làm key thật của Dictionary nên nó vẫn được khớp mờ và
+        // vẫn nhận Asset Default. Chỉ chặn Fill All Keys cưỡng ép gán asset cho nó — áp dụng cho cả
+        // enum member 'None' lẫn key string "None". null = không key nào bị chặn.
+        private static bool[] BuildForceFillMask(string[] keyNames)
+        {
+            bool[] mask = null;
+            for (int i = 0; i < keyNames.Length; i++)
+            {
+                if (!FEnumTypeUtils.ShouldSkipEnumMember(keyNames[i])) continue;
+                if (mask == null)
+                {
+                    mask = new bool[keyNames.Length];
+                    for (int j = 0; j < mask.Length; j++) mask[j] = true;
+                }
+                mask[i] = false;
+            }
+            return mask;
         }
 
         // Collections have no keys: result = kept existing items (override off) + all type-compatible assets sorted by name.
@@ -589,7 +585,7 @@ namespace Feeder
                 results.Add(new KeyMatchResult { Key = obj, KeyName = obj.name, AssignedAsset = obj, Status = MatchStatus.Skipped });
             foreach (Object asset in assets)
                 if (!existingSet.Contains(asset))
-                    results.Add(new KeyMatchResult { Key = asset, KeyName = asset.name, AssignedAsset = asset, BestScore = 1f, Status = MatchStatus.Matched });
+                    results.Add(new KeyMatchResult { Key = asset, KeyName = asset.name, AssignedAsset = asset, BestScore = 1f, ScoreText = "100.0%", Status = MatchStatus.Matched });
             return results;
         }
 
@@ -687,10 +683,11 @@ namespace Feeder
             switch (match.Status)
             {
                 case MatchStatus.Skipped:         return "skip";
-                case MatchStatus.Matched:          return $"{match.BestScore * 100f:F1}%";
+                case MatchStatus.Matched:          return match.ScoreText ?? "—";
+                case MatchStatus.Forced:           return (match.ScoreText ?? "—") + "*";
                 case MatchStatus.FallbackDefault:
                     if (match.AssignedAsset != null) return "default";
-                    return match.BestScore > 0f ? $"{match.BestScore * 100f:F1}%" : "—";
+                    return match.ScoreText ?? "—";
                 default:                           return "—";
             }
         }
@@ -701,6 +698,9 @@ namespace Feeder
             {
                 case MatchStatus.Matched when match.AssignedAsset != null:
                     Debug.Log($"<color=cyan>Match: '{match.KeyName}' → '{match.AssignedAsset.name}' ({match.BestScore * 100f:F1}%)</color>");
+                    break;
+                case MatchStatus.Forced when match.AssignedAsset != null:
+                    Debug.Log($"<color=yellow>Fill: '{match.KeyName}' → '{match.AssignedAsset.name}' (dưới ngưỡng: {match.BestScore * 100f:F1}%)</color>");
                     break;
                 case MatchStatus.FallbackDefault when match.AssignedAsset != null:
                     Debug.Log($"<color=orange>Default: '{match.KeyName}' → '{match.AssignedAsset.name}' (best: {match.BestScore * 100f:F1}%)</color>");
