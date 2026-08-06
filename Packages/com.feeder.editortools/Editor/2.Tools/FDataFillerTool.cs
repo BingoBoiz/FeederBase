@@ -54,7 +54,8 @@ namespace Feeder
         {
             return "Tự điền field chứa nhiều asset (Dictionary<Enum,T>, Dictionary<string,T>, List<T>, T[], HashSet<T>) " +
                    "trên ScriptableObject / Component bằng asset trong Target Assets. Dictionary gán theo vị trí: key thứ i " +
-                   "nhận asset thứ i (không so tên); List/Array/HashSet nhận toàn bộ asset hợp kiểu. Field chứa Component " +
+                   "nhận asset thứ i (không so tên; ô null = placeholder giữ chỗ, key đó nhận Asset Default); " +
+                   "List/Array/HashSet nhận toàn bộ asset hợp kiểu. Field chứa Component " +
                    "thì kéo prefab vào Target Assets — tool tự lấy component ở prefab root. Preview xem trước; Fill Field ghi vào field đã chọn.";
         }
 
@@ -190,10 +191,15 @@ namespace Feeder
                 "                  field chứa Component thì kéo prefab vào — tool tự lấy component ở prefab root)\n" +
                 "Field             Dictionary<Enum,T> / Dictionary<string,T> / List<T> / T[] / HashSet<T>\n" +
                 "Dictionary        gán theo vị trí: key thứ i nhận asset thứ i trong Target Assets, không so tên\n" +
-                "                  — kéo thả Target Assets về đúng thứ tự key trước. Key 'None' và key bị skip\n" +
-                "                  (Override off) KHÔNG tiêu asset nào, hàng phía sau vẫn dồn lên\n" +
+                "                  — kéo thả Target Assets về đúng thứ tự key trước. Key bị skip (Override off)\n" +
+                "                  vẫn tiêu slot của nó nên hàng phía sau không lệch; riêng key 'None' không có\n" +
+                "                  slot nào (Sort Order tool cũng loại 'None' khỏi danh sách)\n" +
+                "Ô null            null trong Target Assets là placeholder GIỮ VỊ TRÍ (đúng output của Sort Order\n" +
+                "                  tool khi enum thiếu asset): nó vẫn tiêu một slot nên key phía sau không lệch,\n" +
+                "                  key ứng với nó nhận Asset Default. Asset sai kiểu cũng bị coi là ô rỗng như vậy\n" +
+                "                  (List/Array/Set thì null bị lọc bỏ như cũ vì không gán theo vị trí)\n" +
                 "Override          Dictionary: ghi đè value đã có; List/Array/Set: replace thay vì append\n" +
-                "Asset Default     asset dự phòng cho key hết asset để nhận, và cho key 'None' (Dictionary)\n" +
+                "Asset Default     asset dự phòng cho key rơi vào ô null / hết asset, và cho key 'None' (Dictionary)\n" +
                 "Preview           xem bảng key → asset trước khi ghi\n" +
                 "Fill Field        ghi kết quả vào field đã chọn"
             );
@@ -211,7 +217,7 @@ namespace Feeder
             if (!TryResolveField(out Object host, out FillTargetInfo info))
                 return;
 
-            List<Object> assets = CollectAssetsOfType(info.ElementType);
+            List<Object> assets = CollectAssetsFor(info);
             List<KeyMatchResult> matches = ComputeMatchesFor(host, info, assets);
 
             _previewRows = matches.Select(m => new MatchPreviewRow
@@ -231,7 +237,7 @@ namespace Feeder
             if (!TryResolveField(out Object host, out FillTargetInfo info))
                 return;
 
-            List<Object> assets = CollectAssetsOfType(info.ElementType);
+            List<Object> assets = CollectAssetsFor(info);
 
             Undo.RegisterCompleteObjectUndo(host, "Fill Field");
             List<KeyMatchResult> matches = ComputeMatchesFor(host, info, assets);
@@ -374,6 +380,10 @@ namespace Feeder
 
         // ── Asset collection ──
 
+        // Dictionary gán theo vị trí nên phải giữ chỗ; List/Array/HashSet thì nén là đúng.
+        private List<Object> CollectAssetsFor(FillTargetInfo info)
+            => info.IsDict ? CollectAssetSlots(info.ElementType) : CollectAssetsOfType(info.ElementType);
+
         // Accepts any asset assignable to elementType; Texture2D expands to Sprite sub-assets when filling Sprites,
         // and a dragged prefab (always a GameObject) resolves to its root component when filling a Component type.
         private List<Object> CollectAssetsOfType(Type elementType)
@@ -384,43 +394,98 @@ namespace Feeder
             foreach (Object asset in TargetAssets)
             {
                 if (asset == null) continue;
+                if (IsDraggedPrefabFor(asset, elementType)) prefabCount++;
 
-                if (elementType.IsInstanceOfType(asset))
-                {
-                    if (seen.Add(asset)) result.Add(asset);
-                    continue;
-                }
-
-                if (elementType == typeof(Sprite) && asset is Texture2D)
-                {
-                    string path = AssetDatabase.GetAssetPath(asset);
-                    foreach (Object sub in AssetDatabase.LoadAllAssetsAtPath(path))
-                        if (sub is Sprite sprite && seen.Add(sprite))
-                            result.Add(sprite);
-                    continue;
-                }
-
-                // Project window can only drag prefab roots (GameObject), never a component — so a Component-typed
-                // field is unfillable unless we resolve it here. Root only: matching compares component.name, which
-                // is the owning GameObject's name, so a component from a child would silently match the child's name.
-                if (typeof(Component).IsAssignableFrom(elementType) && asset is GameObject go)
-                {
-                    prefabCount++;
-                    Component comp = go.GetComponent(elementType);
-                    if (comp != null && seen.Add(comp)) result.Add(comp);
-                    continue;
-                }
+                foreach (Object resolved in ResolveAssetEntry(asset, elementType))
+                    if (seen.Add(resolved)) result.Add(resolved);
             }
 
             if (result.Count == 0)
-            {
-                if (prefabCount > 0)
-                    Debug.LogWarning($"[Feeder] Đã kéo {prefabCount} prefab vào Target Assets nhưng không prefab nào " +
-                                     $"có component {elementType.Name} ở root (component ở child không được lấy).");
-                else
-                    Debug.LogWarning($"[Feeder] Không tìm thấy asset kiểu {elementType.Name} nào trong Target Assets.");
-            }
+                WarnNoUsableAssets(elementType, prefabCount);
             return result;
+        }
+
+        // Slot-preserving cho Dictionary: mỗi phần tử Target Assets ra đúng MỘT slot, kể cả khi nó là
+        // null hoặc sai kiểu — nếu nén lại thì mọi key phía sau lệch một nhịp (Sort Order tool cố ý
+        // ghi null vào Target Assets làm placeholder cho enum member thiếu asset).
+        // Ngoại lệ duy nhất là Texture2D nở ra nhiều sub-sprite: chỉ texture 1 sprite mới giữ được 1 slot = 1 asset.
+        // Cũng không dedupe: cùng một asset kéo vào 2 chỗ là 2 slot, bỏ bớt cũng làm lệch hàng.
+        private List<Object> CollectAssetSlots(Type elementType)
+        {
+            var result = new List<Object>();
+            var wrongTypeNames = new List<string>();
+            int prefabCount = 0;
+            int usableCount = 0;
+
+            foreach (Object asset in TargetAssets)
+            {
+                if (asset == null)
+                {
+                    result.Add(null);
+                    continue;
+                }
+                if (IsDraggedPrefabFor(asset, elementType)) prefabCount++;
+
+                int before = result.Count;
+                foreach (Object resolved in ResolveAssetEntry(asset, elementType))
+                    result.Add(resolved);
+
+                if (result.Count > before)
+                {
+                    usableCount += result.Count - before;
+                    continue;
+                }
+
+                result.Add(null); // giữ chỗ để key phía sau không lệch
+                wrongTypeNames.Add(asset.name);
+            }
+
+            if (wrongTypeNames.Count > 0)
+                Debug.LogWarning($"[Feeder] {wrongTypeNames.Count} asset trong Target Assets không dùng được cho kiểu " +
+                                 $"{elementType.Name} nên bị coi là ô rỗng (vẫn giữ vị trí): {string.Join(", ", wrongTypeNames)}.");
+            if (usableCount == 0)
+                WarnNoUsableAssets(elementType, prefabCount);
+            return result;
+        }
+
+        // Một phần tử Target Assets → 0..n asset hợp kiểu. Rỗng = null / sai kiểu / prefab không có component.
+        private static IEnumerable<Object> ResolveAssetEntry(Object asset, Type elementType)
+        {
+            if (elementType.IsInstanceOfType(asset))
+            {
+                yield return asset;
+                yield break;
+            }
+
+            if (elementType == typeof(Sprite) && asset is Texture2D)
+            {
+                string path = AssetDatabase.GetAssetPath(asset);
+                foreach (Object sub in AssetDatabase.LoadAllAssetsAtPath(path))
+                    if (sub is Sprite sprite)
+                        yield return sprite;
+                yield break;
+            }
+
+            // Project window can only drag prefab roots (GameObject), never a component — so a Component-typed
+            // field is unfillable unless we resolve it here. Root only: a component from a child belongs to the
+            // child's GameObject, so taking it would silently fill the key with the wrong object.
+            if (typeof(Component).IsAssignableFrom(elementType) && asset is GameObject go)
+            {
+                Component comp = go.GetComponent(elementType);
+                if (comp != null) yield return comp;
+            }
+        }
+
+        private static bool IsDraggedPrefabFor(Object asset, Type elementType)
+            => asset is GameObject && typeof(Component).IsAssignableFrom(elementType);
+
+        private static void WarnNoUsableAssets(Type elementType, int prefabCount)
+        {
+            if (prefabCount > 0)
+                Debug.LogWarning($"[Feeder] Đã kéo {prefabCount} prefab vào Target Assets nhưng không prefab nào " +
+                                 $"có component {elementType.Name} ở root (component ở child không được lấy).");
+            else
+                Debug.LogWarning($"[Feeder] Không tìm thấy asset kiểu {elementType.Name} nào trong Target Assets.");
         }
 
         // ── Matching ──
@@ -449,9 +514,11 @@ namespace Feeder
                     var dict = current as IDictionary;
                     if (dict == null || dict.Count == 0)
                     {
-                        // No keys to fill — add every collected asset keyed by its name.
-                        assets.Sort((a, b) => EditorUtility.NaturalCompare(a.name, b.name));
-                        return assets.Select(a => new KeyMatchResult
+                        // No keys to fill — add every collected asset keyed by its name. Không có key thì
+                        // cũng không có vị trí để giữ, nên bỏ hẳn slot rỗng đi.
+                        List<Object> named = assets.Where(a => a != null).ToList();
+                        named.Sort((a, b) => EditorUtility.NaturalCompare(a.name, b.name));
+                        return named.Select(a => new KeyMatchResult
                         {
                             Key = a.name, KeyName = a.name, AssignedAsset = a, Status = MatchStatus.Filled,
                         }).ToList();
@@ -473,9 +540,11 @@ namespace Feeder
             return null;
         }
 
-        // Gán theo vị trí, không so tên: key thứ i nhận asset thứ i theo đúng thứ tự Target Assets.
-        // Key không tham gia hàng (bị skip vì Override off, hoặc member 'None') KHÔNG tiêu asset nào —
-        // con trỏ asset chỉ nhích khi thật sự gán, nên các key phía sau dồn lên chứ không lệch một nhịp.
+        // Gán theo vị trí, không so tên: key thứ i nhận slot thứ i theo đúng thứ tự Target Assets.
+        // Mọi key đều tiêu đúng một slot — kể cả key rơi vào slot rỗng (null placeholder / asset sai kiểu)
+        // lẫn key bị skip vì Override off. Bỏ qua slot của chúng là làm mọi key phía sau lệch một nhịp
+        // so với danh sách do FSortOrderTool sinh ra.
+        // Ngoại lệ duy nhất là member 'None': FSortOrderTool loại nó khỏi danh sách nên nó không có slot.
         private List<KeyMatchResult> ComputeDictMatches(object[] keys, string[] keyNames, List<Object> assets, IDictionary dictionary, Object fallback)
         {
             int keyCount = keys.Length;
@@ -497,22 +566,32 @@ namespace Feeder
             int nextAsset = 0;
             for (int i = 0; i < keyCount; i++)
             {
+                // Tool này giữ 'None' làm key thật của Dictionary, nhưng nó là member rỗng và không có
+                // slot nào dành cho nó — vẫn rơi về Asset Default như trước.
+                if (FEnumTypeUtils.ShouldSkipEnumMember(keyNames[i]))
+                {
+                    results.Add(skipAssets[i] != null
+                        ? new KeyMatchResult { Key = keys[i], KeyName = keyNames[i], AssignedAsset = skipAssets[i], Status = MatchStatus.Skipped }
+                        : new KeyMatchResult { Key = keys[i], KeyName = keyNames[i], AssignedAsset = fallback, Status = MatchStatus.FallbackDefault });
+                    continue;
+                }
+
+                // Dùng '!= null' của UnityEngine.Object để bắt cả reference đã bị destroy/missing.
+                Object slot = nextAsset < assets.Count ? assets[nextAsset++] : null;
+
                 if (skipAssets[i] != null)
                 {
                     results.Add(new KeyMatchResult { Key = keys[i], KeyName = keyNames[i], AssignedAsset = skipAssets[i], Status = MatchStatus.Skipped });
                     continue;
                 }
 
-                // Tool này giữ 'None' làm key thật của Dictionary, nhưng nó là member rỗng nên không
-                // được ăn một asset trong hàng — vẫn rơi về Asset Default như trước.
-                bool takesAsset = !FEnumTypeUtils.ShouldSkipEnumMember(keyNames[i]) && nextAsset < assets.Count;
-
+                bool hasAsset = slot != null;
                 results.Add(new KeyMatchResult
                 {
                     Key = keys[i],
                     KeyName = keyNames[i],
-                    AssignedAsset = takesAsset ? assets[nextAsset++] : fallback,
-                    Status = takesAsset ? MatchStatus.Filled : MatchStatus.FallbackDefault,
+                    AssignedAsset = hasAsset ? slot : fallback,
+                    Status = hasAsset ? MatchStatus.Filled : MatchStatus.FallbackDefault,
                 });
             }
 
