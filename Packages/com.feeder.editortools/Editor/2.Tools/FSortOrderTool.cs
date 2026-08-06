@@ -13,11 +13,6 @@ namespace Feeder
             [TableColumnWidth(180)]
             public string EnumName;
 
-            [TableColumnWidth(80, Resizable = false)]
-            [ReadOnly]
-            [DisplayAsString]
-            public string Score;
-
             [TableColumnWidth(280)]
             [AssetSelector(Paths = "Assets")]
             public UnityEngine.Object Asset;
@@ -25,7 +20,7 @@ namespace Feeder
 
         protected override string GetDescription()
         {
-            return "Sắp xếp TargetAssets theo thứ tự enum bằng cách khớp tên mờ. Analyze hiện bảng map; Apply Sort ghi đè TargetAssets theo thứ tự enum (null = không khớp).";
+            return "Áp thứ tự TargetAssets vào thứ tự enum theo đúng vị trí (asset thứ i → enum thứ i). Analyze hiện bảng map; Apply Sort ghi đè TargetAssets theo thứ tự enum (null = thiếu asset).";
         }
 
         [PropertySpace(SpaceBefore = 8)]
@@ -38,31 +33,18 @@ namespace Feeder
             set => FToolPrefs.SetString(nameof(FSortOrderTool), nameof(_selectedEnumTypeName), value);
         }
 
-        private const float DefaultThresholdPercent = 0.9f;
-
-        [OnInspectorGUI]
-        private void DrawMatchThreshold()
-            => FMatchThresholdGUI.Draw(nameof(FSortOrderTool), DefaultThresholdPercent);
-
         [PropertyOrder(40)]
         [OnInspectorGUI]
         private void DrawGuide()
         {
             GUILayout.Space(2);
             FStylesUtils.DrawInfoBox(
-                "Enum Type       chọn enum làm thứ tự chuẩn (member None bị bỏ qua)\n" +
-                "Threshold       ngưỡng khớp tối thiểu (0–1), thường để 0.8–0.9. Bấm icon cạnh label để đổi\n" +
-                "                sang ngưỡng theo số ký tự lệch (gợi ý 1–3) khi tên ngắn — % chia theo\n" +
-                "                độ dài nên tên ngắn lệch 2 ký tự đã tụt xuống ~50%\n" +
-                "Match Strategy  Fuzzy         tắt = chỉ gán khi tên asset giống hệt tên enum từng ký tự.\n" +
-                "                              Dòng ngưỡng ẩn đi, Score hiện 'exact' — hoặc '≠case' nếu\n" +
-                "                              chỉ khác hoa/thường / thứ tự token\n" +
-                "                Unique Asset  mỗi asset chỉ gán cho 1 enum; tắt = nhiều enum dùng chung 1 asset\n" +
-                "                Fill All      enum dưới ngưỡng vẫn nhận asset tốt nhất còn lại (giả định số\n" +
-                "                              asset ≥ số enum). Ngưỡng thành mốc tin cậy: dòng gán ép có dấu *\n" +
-                "Analyze         xem bảng map enum → asset kèm % khớp (hoặc Δn = số ký tự lệch)\n" +
-                "Apply Sort      sắp xếp lại TargetAssets theo thứ tự enum (null = không khớp). Lưu ý: asset\n" +
-                "                dư ngoài số enum bị loại khỏi TargetAssets"
+                "Enum Type    chọn enum làm thứ tự chuẩn (member None bị bỏ qua)\n" +
+                "Analyze      ghép theo vị trí: asset thứ i trong TargetAssets → enum thứ i.\n" +
+                "             Không so tên, nên hãy kéo thả TargetAssets về đúng thứ tự trước\n" +
+                "             (cột Asset trong bảng vẫn sửa tay được)\n" +
+                "Apply Sort   ghi đè TargetAssets theo thứ tự enum. Lưu ý: asset dư ngoài số enum\n" +
+                "             bị loại khỏi TargetAssets, enum thiếu asset thành null"
             );
             GUILayout.Space(4);
         }
@@ -79,26 +61,16 @@ namespace Feeder
             if (TargetAssets == null)
                 throw new InvalidOperationException("TargetAssets is null.");
 
-            FMatchThreshold threshold = FMatchThreshold.Load(nameof(FSortOrderTool), DefaultThresholdPercent);
-
             _mappingRows ??= new List<SortOrderMappingRow>();
             _mappingRows.Clear();
 
             List<string> enumNames = FEnumTypeUtils.GetMatchableMemberNames(enumType);
-            string[] assetNames = new string[TargetAssets.Count];
-            for (int i = 0; i < TargetAssets.Count; i++)
-                assetNames[i] = TargetAssets[i] != null ? TargetAssets[i].name : null;
-
-            FMatchAssign.Entry[] entries = FMatchAssign.Run(enumNames, assetNames, threshold);
-
             for (int i = 0; i < enumNames.Count; i++)
             {
-                FMatchAssign.Entry entry = entries[i];
                 _mappingRows.Add(new SortOrderMappingRow
                 {
                     EnumName = enumNames[i],
-                    Score = entry.HasScore ? entry.Score.Text + (entry.Forced ? "*" : "") : "—",
-                    Asset = entry.AssetIndex >= 0 ? TargetAssets[entry.AssetIndex] : null,
+                    Asset = i < TargetAssets.Count ? TargetAssets[i] : null,
                 });
             }
         }
