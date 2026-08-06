@@ -23,12 +23,12 @@ namespace Feeder
             [TableColumnWidth(80, Resizable = false)]
             [ReadOnly]
             [DisplayAsString]
-            public string Score;
+            public string Status;
 
             public Object Asset;
         }
 
-        private enum MatchStatus { Matched, Forced, FallbackDefault, Skipped }
+        private enum MatchStatus { Filled, FallbackDefault, Skipped }
 
         private enum FieldKind { EnumDict, StringDict, ListLike, Array, HashSet }
 
@@ -47,17 +47,15 @@ namespace Feeder
             public object Key;
             public string KeyName;
             public Object AssignedAsset;
-            public float BestScore;
-            public string ScoreText;  // "95.0%" hoặc "Δ2" tuỳ chế độ ngưỡng
             public MatchStatus Status;
         }
 
         protected override string GetDescription()
         {
             return "Tự điền field chứa nhiều asset (Dictionary<Enum,T>, Dictionary<string,T>, List<T>, T[], HashSet<T>) " +
-                   "trên ScriptableObject / Component bằng asset trong Target Assets. Dictionary khớp mờ tên key với tên asset; " +
-                   "List/Array/HashSet nhận toàn bộ asset hợp kiểu. Field chứa Component thì kéo prefab vào Target Assets — " +
-                   "tool tự lấy component ở prefab root. Preview Match xem trước; Fill Field ghi vào field đã chọn.";
+                   "trên ScriptableObject / Component bằng asset trong Target Assets. Dictionary gán theo vị trí: key thứ i " +
+                   "nhận asset thứ i (không so tên); List/Array/HashSet nhận toàn bộ asset hợp kiểu. Field chứa Component " +
+                   "thì kéo prefab vào Target Assets — tool tự lấy component ở prefab root. Preview xem trước; Fill Field ghi vào field đã chọn.";
         }
 
         // ── Target: SO, GameObject (chọn Component bên trong), hoặc Component kéo trực tiếp ──
@@ -153,17 +151,6 @@ namespace Feeder
             set => FToolPrefs.SetString(nameof(FDataFillerTool), nameof(SelectedFieldName), value);
         }
 
-        private const float DefaultThresholdPercent = 0.8f;
-
-        // [ShowIf] không áp dụng được cho [OnInspectorGUI] nên guard ngay trong thân method.
-        [PropertyOrder(-870)]
-        [OnInspectorGUI]
-        private void DrawMatchThreshold()
-        {
-            if (!SelectedFieldIsDict) return;
-            FMatchThresholdGUI.Draw(nameof(FDataFillerTool), DefaultThresholdPercent);
-        }
-
         [PropertyOrder(-860)]
         [PropertySpace(SpaceBefore = 6)]
         [LabelText("Override Existing Values")]
@@ -202,19 +189,12 @@ namespace Feeder
                 "Target Assets     kéo asset nguồn vào đây (Texture2D tự tách sub-sprites khi field chứa Sprite;\n" +
                 "                  field chứa Component thì kéo prefab vào — tool tự lấy component ở prefab root)\n" +
                 "Field             Dictionary<Enum,T> / Dictionary<string,T> / List<T> / T[] / HashSet<T>\n" +
-                "Match Threshold   ngưỡng khớp mờ cho Dictionary (0–1), thường 0.8–0.9. Bấm icon cạnh label để đổi\n" +
-                "                  sang ngưỡng theo số ký tự lệch (gợi ý 1–3) khi key/tên asset ngắn — % chia\n" +
-                "                  theo độ dài nên tên 4 ký tự lệch 2 đã tụt xuống ~50%\n" +
-                "Match Strategy    Fuzzy         tắt = chỉ gán khi tên asset giống hệt tên key từng ký tự.\n" +
-                "                                Dòng ngưỡng ẩn đi, cột Score hiện 'exact' — hoặc '≠case'\n" +
-                "                                nếu chỉ khác hoa/thường / thứ tự token\n" +
-                "                  Unique Asset  mỗi asset chỉ gán cho 1 key; tắt = nhiều key dùng chung 1 asset\n" +
-                "                  Fill All      key dưới ngưỡng vẫn nhận asset tốt nhất còn lại (giả định số\n" +
-                "                                asset ≥ số key). Ngưỡng thành mốc tin cậy: dòng gán ép có dấu *\n" +
-                "                                ở cột Score. Member None không bị gán ép, vẫn rơi về Asset Default\n" +
+                "Dictionary        gán theo vị trí: key thứ i nhận asset thứ i trong Target Assets, không so tên\n" +
+                "                  — kéo thả Target Assets về đúng thứ tự key trước. Key 'None' và key bị skip\n" +
+                "                  (Override off) KHÔNG tiêu asset nào, hàng phía sau vẫn dồn lên\n" +
                 "Override          Dictionary: ghi đè value đã có; List/Array/Set: replace thay vì append\n" +
-                "Asset Default     asset dự phòng cho key không khớp (Dictionary)\n" +
-                "Preview Match     xem bảng key → asset kèm % khớp (hoặc Δn = số ký tự lệch) trước khi ghi\n" +
+                "Asset Default     asset dự phòng cho key hết asset để nhận, và cho key 'None' (Dictionary)\n" +
+                "Preview           xem bảng key → asset trước khi ghi\n" +
                 "Fill Field        ghi kết quả vào field đã chọn"
             );
             GUILayout.Space(4);
@@ -225,7 +205,7 @@ namespace Feeder
         [PropertyOrder(50)]
         [PropertySpace(SpaceBefore = 10)]
         [ButtonGroup("FillActions")]
-        [Button("Preview Match", ButtonSizes.Medium)]
+        [Button("Preview", ButtonSizes.Medium)]
         private void PreviewMatch()
         {
             if (!TryResolveField(out Object host, out FillTargetInfo info))
@@ -236,9 +216,9 @@ namespace Feeder
 
             _previewRows = matches.Select(m => new MatchPreviewRow
             {
-                Key   = m.KeyName,
-                Score = FormatMatchScore(m, info),
-                Asset = m.AssignedAsset,
+                Key    = m.KeyName,
+                Status = FormatStatus(m, info),
+                Asset  = m.AssignedAsset,
             }).ToList();
         }
 
@@ -469,11 +449,11 @@ namespace Feeder
                     var dict = current as IDictionary;
                     if (dict == null || dict.Count == 0)
                     {
-                        // No keys to match against — add every collected asset keyed by its name.
+                        // No keys to fill — add every collected asset keyed by its name.
                         assets.Sort((a, b) => EditorUtility.NaturalCompare(a.name, b.name));
                         return assets.Select(a => new KeyMatchResult
                         {
-                            Key = a.name, KeyName = a.name, AssignedAsset = a, BestScore = 1f, ScoreText = "100.0%", Status = MatchStatus.Matched,
+                            Key = a.name, KeyName = a.name, AssignedAsset = a, Status = MatchStatus.Filled,
                         }).ToList();
                     }
                     object[] keys = dict.Keys.Cast<object>().ToArray();
@@ -493,13 +473,11 @@ namespace Feeder
             return null;
         }
 
-        // Gán qua FMatchAssign (greedy toàn cục, dùng chung với FCompareStringTool/FSortOrderTool).
-        // Key bị skip vì Override off được truyền tên null nên không tham gia khớp, nhưng vẫn giữ
-        // đúng chỗ trong mảng để dựng row theo thứ tự key.
+        // Gán theo vị trí, không so tên: key thứ i nhận asset thứ i theo đúng thứ tự Target Assets.
+        // Key không tham gia hàng (bị skip vì Override off, hoặc member 'None') KHÔNG tiêu asset nào —
+        // con trỏ asset chỉ nhích khi thật sự gán, nên các key phía sau dồn lên chứ không lệch một nhịp.
         private List<KeyMatchResult> ComputeDictMatches(object[] keys, string[] keyNames, List<Object> assets, IDictionary dictionary, Object fallback)
         {
-            FMatchThreshold threshold = FMatchThreshold.Load(nameof(FDataFillerTool), DefaultThresholdPercent);
-
             int keyCount = keys.Length;
 
             // Determine which keys to skip (override disabled + already has a non-null value)
@@ -514,20 +492,9 @@ namespace Feeder
                 }
             }
 
-            var matchKeyNames = new string[keyCount];
-            for (int i = 0; i < keyCount; i++)
-                matchKeyNames[i] = skipAssets[i] != null ? null : keyNames[i];
-
-            // Dùng '!= null' của UnityEngine.Object (không dùng ?.) để bắt cả reference đã bị destroy
-            // hoặc missing — tên null báo cho FMatchAssign biết slot này không tham gia khớp.
-            var assetNames = new string[assets.Count];
-            for (int i = 0; i < assets.Count; i++)
-                assetNames[i] = assets[i] != null ? assets[i].name : null;
-
-            FMatchAssign.Entry[] entries = FMatchAssign.Run(matchKeyNames, assetNames, threshold, BuildForceFillMask(keyNames));
-
             // Build result in key order
             var results = new List<KeyMatchResult>(keyCount);
+            int nextAsset = 0;
             for (int i = 0; i < keyCount; i++)
             {
                 if (skipAssets[i] != null)
@@ -536,36 +503,20 @@ namespace Feeder
                     continue;
                 }
 
-                FMatchAssign.Entry entry = entries[i];
-                if (entry.AssetIndex >= 0)
-                {
-                    results.Add(new KeyMatchResult { Key = keys[i], KeyName = keyNames[i], AssignedAsset = assets[entry.AssetIndex], BestScore = entry.Score.Similarity, ScoreText = entry.Score.Text, Status = entry.Forced ? MatchStatus.Forced : MatchStatus.Matched });
-                    continue;
-                }
+                // Tool này giữ 'None' làm key thật của Dictionary, nhưng nó là member rỗng nên không
+                // được ăn một asset trong hàng — vẫn rơi về Asset Default như trước.
+                bool takesAsset = !FEnumTypeUtils.ShouldSkipEnumMember(keyNames[i]) && nextAsset < assets.Count;
 
-                results.Add(new KeyMatchResult { Key = keys[i], KeyName = keyNames[i], AssignedAsset = fallback, BestScore = entry.Score.Similarity, ScoreText = entry.HasScore ? entry.Score.Text : "—", Status = MatchStatus.FallbackDefault });
+                results.Add(new KeyMatchResult
+                {
+                    Key = keys[i],
+                    KeyName = keyNames[i],
+                    AssignedAsset = takesAsset ? assets[nextAsset++] : fallback,
+                    Status = takesAsset ? MatchStatus.Filled : MatchStatus.FallbackDefault,
+                });
             }
 
             return results;
-        }
-
-        // Khác 2 tool kia, tool này giữ 'None' làm key thật của Dictionary nên nó vẫn được khớp mờ và
-        // vẫn nhận Asset Default. Chỉ chặn Fill All Keys cưỡng ép gán asset cho nó — áp dụng cho cả
-        // enum member 'None' lẫn key string "None". null = không key nào bị chặn.
-        private static bool[] BuildForceFillMask(string[] keyNames)
-        {
-            bool[] mask = null;
-            for (int i = 0; i < keyNames.Length; i++)
-            {
-                if (!FEnumTypeUtils.ShouldSkipEnumMember(keyNames[i])) continue;
-                if (mask == null)
-                {
-                    mask = new bool[keyNames.Length];
-                    for (int j = 0; j < mask.Length; j++) mask[j] = true;
-                }
-                mask[i] = false;
-            }
-            return mask;
         }
 
         // Collections have no keys: result = kept existing items (override off) + all type-compatible assets sorted by name.
@@ -585,7 +536,7 @@ namespace Feeder
                 results.Add(new KeyMatchResult { Key = obj, KeyName = obj.name, AssignedAsset = obj, Status = MatchStatus.Skipped });
             foreach (Object asset in assets)
                 if (!existingSet.Contains(asset))
-                    results.Add(new KeyMatchResult { Key = asset, KeyName = asset.name, AssignedAsset = asset, BestScore = 1f, ScoreText = "100.0%", Status = MatchStatus.Matched });
+                    results.Add(new KeyMatchResult { Key = asset, KeyName = asset.name, AssignedAsset = asset, Status = MatchStatus.Filled });
             return results;
         }
 
@@ -675,19 +626,16 @@ namespace Feeder
 
         // ── Display ──
 
-        private string FormatMatchScore(KeyMatchResult match, FillTargetInfo info)
+        private string FormatStatus(KeyMatchResult match, FillTargetInfo info)
         {
             if (!info.IsDict)
                 return match.Status == MatchStatus.Skipped ? "keep" : "add";
 
             switch (match.Status)
             {
-                case MatchStatus.Skipped:         return "skip";
-                case MatchStatus.Matched:          return match.ScoreText ?? "—";
-                case MatchStatus.Forced:           return (match.ScoreText ?? "—") + "*";
-                case MatchStatus.FallbackDefault:
-                    if (match.AssignedAsset != null) return "default";
-                    return match.ScoreText ?? "—";
+                case MatchStatus.Skipped:          return "skip";
+                case MatchStatus.Filled:           return "fill";
+                case MatchStatus.FallbackDefault:  return match.AssignedAsset != null ? "default" : "—";
                 default:                           return "—";
             }
         }
@@ -696,17 +644,14 @@ namespace Feeder
         {
             switch (match.Status)
             {
-                case MatchStatus.Matched when match.AssignedAsset != null:
-                    Debug.Log($"<color=cyan>Match: '{match.KeyName}' → '{match.AssignedAsset.name}' ({match.BestScore * 100f:F1}%)</color>");
-                    break;
-                case MatchStatus.Forced when match.AssignedAsset != null:
-                    Debug.Log($"<color=yellow>Fill: '{match.KeyName}' → '{match.AssignedAsset.name}' (dưới ngưỡng: {match.BestScore * 100f:F1}%)</color>");
+                case MatchStatus.Filled when match.AssignedAsset != null:
+                    Debug.Log($"<color=cyan>Fill: '{match.KeyName}' → '{match.AssignedAsset.name}'</color>");
                     break;
                 case MatchStatus.FallbackDefault when match.AssignedAsset != null:
-                    Debug.Log($"<color=orange>Default: '{match.KeyName}' → '{match.AssignedAsset.name}' (best: {match.BestScore * 100f:F1}%)</color>");
+                    Debug.Log($"<color=orange>Default: '{match.KeyName}' → '{match.AssignedAsset.name}'</color>");
                     break;
                 default:
-                    Debug.Log($"<color=red>No match for '{match.KeyName}' (best: {match.BestScore * 100f:F1}%)</color>");
+                    Debug.Log($"<color=red>Không còn asset cho '{match.KeyName}'</color>");
                     break;
             }
         }
