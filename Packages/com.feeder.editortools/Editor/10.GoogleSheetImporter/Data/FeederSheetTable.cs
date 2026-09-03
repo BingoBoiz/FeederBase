@@ -190,7 +190,7 @@ namespace Feeder
                 GUIStyle cellStyle = MeasureStyleForType(type);
 
                 string header = ObjectNames.NicifyVariableName(fields[c].Name);
-                float width = GUIHelper.CalcWidth(headerStyle, header) + HeaderPadding;
+                float width = headerStyle.CalcSize(GUIHelper.TempContent(header)).x + HeaderPadding;
 
                 if (type.IsEnum)
                 {
@@ -206,7 +206,7 @@ namespace Feeder
                             continue;
                         }
 
-                        float cellWidth = GUIHelper.CalcWidth(cellStyle, cell) + CellPadding;
+                        float cellWidth = cellStyle.CalcSize(GUIHelper.TempContent(cell)).x + CellPadding;
                         if (cellWidth > width)
                         {
                             width = cellWidth;
@@ -251,8 +251,8 @@ namespace Feeder
                     break;
                 }
 
-                float cellWidth = GUIHelper.CalcWidth(cellStyle,
-                    Sirenix.Utilities.StringExtensions.SplitPascalCase(value)) + CellPadding;
+                float cellWidth = cellStyle.CalcSize(GUIHelper.TempContent(
+                    Sirenix.Utilities.StringExtensions.SplitPascalCase(value))).x + CellPadding;
                 if (cellWidth > width)
                 {
                     width = cellWidth;
