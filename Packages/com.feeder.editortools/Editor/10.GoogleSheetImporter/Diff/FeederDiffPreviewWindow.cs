@@ -13,6 +13,7 @@ namespace Feeder
         private const float BottomBarHeight = 40f;
         private const float CheckboxWidth = 18f;
         private const float FoldoutWidth = 14f;
+        private const int MaxWarningRows = 6;
 
         private enum RowKind
         {
@@ -227,6 +228,7 @@ namespace Feeder
                 for (int i = 0; i < file.Items.Count; i++)
                 {
                     rows.Add(new VisualRow { Kind = RowKind.ItemHeader, File = f, Item = i });
+                    AddWarningRows(f, i, file.Items[i].Warnings);
                 }
 
                 FeederDiffFileResult diff = diffs[f];
@@ -294,6 +296,31 @@ namespace Feeder
 
             rowTop[rows.Count] = y;
             totalHeight = y;
+        }
+
+        private void AddWarningRows(int fileIndex, int itemIndex, List<string> warnings)
+        {
+            for (int i = 0; i < warnings.Count && i < MaxWarningRows; i++)
+            {
+                rows.Add(new VisualRow
+                {
+                    Kind = RowKind.Message,
+                    File = fileIndex,
+                    Item = itemIndex,
+                    Message = "⚠  " + warnings[i],
+                });
+            }
+
+            if (warnings.Count > MaxWarningRows)
+            {
+                rows.Add(new VisualRow
+                {
+                    Kind = RowKind.Message,
+                    File = fileIndex,
+                    Item = itemIndex,
+                    Message = $"⚠  (+{warnings.Count - MaxWarningRows} cảnh báo nữa — xem Console)",
+                });
+            }
         }
 
         private static float HeightOf(RowKind kind)
@@ -642,7 +669,7 @@ namespace Feeder
             }
 
             Rect textRect = new Rect(scroll.x + 24f, rect.y, position.width - 40f, rect.height);
-            GUI.Label(textRect, message, FeederDiffStyles.ItemHeader);
+            GUI.Label(textRect, new GUIContent(message, message), FeederDiffStyles.ItemHeader);
         }
 
         private void DrawDiffLine(Rect rect, VisualRow row, int index, float contentWidth)

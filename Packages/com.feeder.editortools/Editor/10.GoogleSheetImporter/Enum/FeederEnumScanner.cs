@@ -140,7 +140,8 @@ namespace Feeder
                 {
                     value.Status = FeederEnumValueStatus.DuplicateIgnoreCase;
                     value.StatusDetail = $"trùng với '{existing}' nếu bỏ qua hoa/thường (dòng sheet {row + 1})";
-                    scan.Warnings.Add($"'{raw}' và '{existing}' chỉ khác hoa/thường — bỏ qua '{raw}'.");
+                    scan.Warnings.Add(
+                        $"[{sourceTab}] dòng sheet {row + 1}: '{raw}' và '{existing}' chỉ khác hoa/thường — bỏ qua '{raw}'.");
                     scan.Values.Add(value);
                     continue;
                 }
@@ -151,7 +152,8 @@ namespace Feeder
                 value.StatusDetail = detail;
                 if (value.Status == FeederEnumValueStatus.Invalid)
                 {
-                    scan.Warnings.Add($"Dòng sheet {row + 1}: '{raw}' không phải tên C# hợp lệ ({detail}).");
+                    scan.Warnings.Add(
+                        $"[{sourceTab}] dòng sheet {row + 1}: '{raw}' không phải tên C# hợp lệ ({detail}).");
                 }
 
                 scan.Values.Add(value);
@@ -188,7 +190,9 @@ namespace Feeder
                 bool ok = c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
                 if (!ok)
                 {
-                    detail = c == ' ' ? "chứa dấu cách" : $"chứa ký tự '{c}'";
+                    detail = c == ' '
+                        ? $"chứa dấu cách ở vị trí {i + 1}"
+                        : $"chứa ký tự '{c}' ở vị trí {i + 1}";
                     return FeederEnumValueStatus.Invalid;
                 }
             }

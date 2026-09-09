@@ -70,6 +70,7 @@ namespace Feeder
             MethodInfo addMethod = dataList.GetType().GetMethod("Add");
             Dictionary<string, UnityEngine.Object> assetCache = new Dictionary<string, UnityEngine.Object>();
             int totalRows = cells.GetLength(1);
+            int failedCells = 0;
             try
             {
                 for (int row = 2; row < totalRows; row++)
@@ -104,8 +105,9 @@ namespace Feeder
                         }
 
                         object value = GetFieldValue(fieldInfo, cell, spriteAssetFolderPath, prefabFolderPath, assetCache);
-                        if (value == null && fieldInfo.FieldType.IsValueType && !fieldInfo.FieldType.IsEnum)
+                        if (value == null && fieldInfo.FieldType.IsValueType)
                         {
+                            failedCells++;
                             Debug.LogError(
                                 $"[Feeder] {typeName} dòng {row + 1}, cột '{rawFields[col]}' ({fieldInfo.FieldType.Name} {fieldInfo.Name}): " +
                                 $"không đọc được giá trị \"{cell}\" → ghi giá trị mặc định.");
@@ -125,6 +127,14 @@ namespace Feeder
             EditorUtility.SetDirty(dataHolder);
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
+            if (failedCells > 0)
+            {
+                Debug.LogWarning(
+                    $"[Feeder] {typeName}: đã generate nhưng {failedCells} ô không đọc được và đã bị ghi " +
+                    "giá trị mặc định — xem các LogError phía trên.");
+                return;
+            }
+
             Debug.Log($"Success !! {typeName} data is generated !!");
         }
 
@@ -457,7 +467,6 @@ namespace Feeder
                 catch (Exception)
                 {
                     value = null;
-                    Debug.LogError($"Convert Fail: {rawValue} to Enum Type {fieldType}");
                 }
             }
 

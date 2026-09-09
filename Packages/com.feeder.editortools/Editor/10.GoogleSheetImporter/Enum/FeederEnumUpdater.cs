@@ -59,6 +59,8 @@ namespace Feeder
             MergeValues(columns, out List<FeederEnumSheetValue> writable,
                 out List<FeederEnumSheetValue> rejected, out List<string> warnings, out List<string> tabs);
 
+            LogRejected(token, rejected);
+
             FeederEnumResolveStatus status = FeederEnumUtils.TryResolveEnumType(token, sheetNamespace,
                 out Type existing, out List<Type> candidates);
 
@@ -395,6 +397,27 @@ namespace Feeder
             }
 
             file.Enums.Add(change);
+        }
+
+        private static void LogRejected(string token, List<FeederEnumSheetValue> rejected)
+        {
+            if (rejected.Count == 0)
+            {
+                return;
+            }
+
+            List<string> lines = new List<string>();
+            for (int i = 0; i < rejected.Count; i++)
+            {
+                FeederEnumSheetValue value = rejected[i];
+                lines.Add($"  • [{value.SourceTab}] dòng sheet {value.FirstRow + 1}: " +
+                          $"'{value.RawValue}' — {value.StatusDetail}");
+            }
+
+            Debug.LogWarning(
+                $"[Update Enum] {token}: bỏ qua {rejected.Count} giá trị, KHÔNG sinh member cho chúng. " +
+                "Sửa lại ô trong Google Sheet rồi Load Sheet và chạy lại — để nguyên thì Generate Assets " +
+                "sẽ ghi None cho mọi dòng dùng ô đó.\n" + string.Join("\n", lines.ToArray()));
         }
 
         private static void MergeValues(List<FeederEnumColumnScan> columns,
