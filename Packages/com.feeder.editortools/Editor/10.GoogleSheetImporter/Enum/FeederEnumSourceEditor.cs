@@ -24,6 +24,9 @@ namespace Feeder
 
     public static class FeederEnumSourceEditor
     {
+        // vừa là chữ trong comment sinh ra, vừa là mốc để dò trùng lần chạy sau và để preview tô đỏ
+        public const string InvalidMemberMarker = "— không hợp lệ:";
+
         public static string MaskCommentsAndStrings(string source)
         {
             if (string.IsNullOrEmpty(source))
@@ -757,7 +760,27 @@ namespace Feeder
 
         private static string MemberLine(FeederEnumNewMember member)
         {
-            return $"{member.MemberName} = {member.Value.ToString(CultureInfo.InvariantCulture)},";
+            return member.IsRejected
+                ? $"// {member.RawSheetValue} {InvalidMemberMarker} {member.RejectReason}"
+                : $"{member.MemberName} = {member.Value.ToString(CultureInfo.InvariantCulture)},";
+        }
+
+        // comment đã ghi lần trước không phải là member nên Enum.GetNames không thấy — dò text để khỏi ghi lại
+        public static bool BodyHasRejectedComment(string text, int openBraceIndex, int closeBraceIndex,
+            string rawValue)
+        {
+            if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(rawValue))
+            {
+                return false;
+            }
+
+            if (openBraceIndex < 0 || closeBraceIndex <= openBraceIndex || closeBraceIndex >= text.Length)
+            {
+                return false;
+            }
+
+            string body = text.Substring(openBraceIndex, closeBraceIndex - openBraceIndex + 1);
+            return body.IndexOf($"// {rawValue} {InvalidMemberMarker}", StringComparison.Ordinal) >= 0;
         }
 
         public static bool IsUnderAssets(string assetPath)

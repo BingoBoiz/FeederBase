@@ -56,10 +56,7 @@ namespace Feeder
             string token, List<FeederEnumColumnScan> columns, string scriptFolderAssetPath,
             string enumScriptAssetPath, string sheetNamespace)
         {
-            MergeValues(columns, out List<FeederEnumSheetValue> writable,
-                out List<FeederEnumSheetValue> rejected, out List<string> warnings, out List<string> tabs);
-
-            LogRejected(token, rejected);
+            MergeValues(columns, out List<FeederEnumSheetValue> values, out List<string> tabs);
 
             FeederEnumResolveStatus status = FeederEnumUtils.TryResolveEnumType(token, sheetNamespace,
                 out Type existing, out List<Type> candidates);
@@ -83,8 +80,6 @@ namespace Feeder
             {
                 EnumToken = token,
                 Include = true,
-                RejectedValues = rejected,
-                Warnings = warnings,
                 SourceTabs = tabs,
             };
 
@@ -107,17 +102,17 @@ namespace Feeder
                         $"(ví dụ s_Field:{names[0]}).");
                 }
 
-                BuildNewEnumChange(plan, filesByPath, change, token, writable, scriptFolderAssetPath,
+                BuildNewEnumChange(plan, filesByPath, change, token, values, scriptFolderAssetPath,
                     enumScriptAssetPath, sheetNamespace);
                 return;
             }
 
-            BuildExistingEnumChange(plan, filesByPath, change, existing, writable, enumScriptAssetPath);
+            BuildExistingEnumChange(plan, filesByPath, change, existing, values, enumScriptAssetPath);
         }
 
         private static void BuildNewEnumChange(FeederEnumUpdatePlan plan,
             Dictionary<string, FeederEnumFileChange> filesByPath, FeederEnumChange change, string token,
-            List<FeederEnumSheetValue> writable, string scriptFolderAssetPath, string enumScriptAssetPath,
+            List<FeederEnumSheetValue> values, string scriptFolderAssetPath, string enumScriptAssetPath,
             string sheetNamespace)
         {
             if (token.IndexOf('.') >= 0)
@@ -141,7 +136,7 @@ namespace Feeder
             change.IsNew = true;
             change.InsertNoneZero = true;
             change.UnderlyingTypeKeyword =
-                writable.Count + 1 <= ByteMemberThreshold ? "byte" : "int";
+                CountWritable(values) + 1 <= ByteMemberThreshold ? "byte" : "int";
 
             string assetPath = useEnumScript
                 ? enumScriptAssetPath
@@ -158,7 +153,7 @@ namespace Feeder
                 change.BlockedReason = $"File {assetPath} đã tồn tại nhưng type chưa load (có thể đang lỗi compile).";
             }
 
-            AssignNewEnumMembers(change, writable);
+            AssignNewEnumMembers(change, values);
 
             if (useEnumScript && existingText != null)
             {
@@ -241,10 +236,10 @@ namespace Feeder
             file.Enums.Add(change);
         }
 
-        public static void AssignNewEnumMembers(FeederEnumChange change, List<FeederEnumSheetValue> writable)
+        public static void AssignNewEnumMembers(FeederEnumChange change, List<FeederEnumSheetValue> values)
         {
             change.NewMembers.Clear();
-            List<FeederEnumSheetValue> ordered = new List<FeederEnumSheetValue>(writable);
+            List<FeederEnumSheetValue> ordered = new List<FeederEnumSheetValue>(values);
 
             int existingNone = ordered.FindIndex(v => string.Equals(v.RawValue, NoneMemberName, StringComparison.Ordinal));
             if (change.InsertNoneZero)
@@ -268,29 +263,66 @@ namespace Feeder
             }
 
             decimal ceiling = FeederEnumSourceEditor.CeilingForKeyword(change.UnderlyingTypeKeyword);
+            int assigned = 0;
             for (int i = 0; i < ordered.Count; i++)
             {
+                if (!ordered[i].IsWritable)
+                {
+                    change.NewMembers.Add(RejectedMember(ordered[i]));
+                    continue;
+                }
+
                 change.NewMembers.Add(new FeederEnumNewMember
                 {
                     RawSheetValue = ordered[i].RawValue,
                     MemberName = ordered[i].MemberName ?? ordered[i].RawValue,
-                    Value = i,
+                    Value = assigned,
                     FirstSheetRow = ordered[i].FirstRow,
                     SourceTab = ordered[i].SourceTab,
                 });
+                assigned++;
             }
 
-            if (!change.IsBlocked && ordered.Count - 1 > ceiling)
+            if (!change.IsBlocked && assigned - 1 > ceiling)
             {
                 change.BlockedReason =
-                    $"{ordered.Count} giá trị vượt trần của '{change.UnderlyingTypeKeyword}' ({ceiling}). " +
+                    $"{assigned} giá trị vượt trần của '{change.UnderlyingTypeKeyword}' ({ceiling}). " +
                     "Đổi underlying type ở dropdown bên cạnh.";
             }
         }
 
+        // giá trị lỗi vẫn được ghi ra file nhưng dưới dạng comment: không compile, không chiếm số
+        private static FeederEnumNewMember RejectedMember(FeederEnumSheetValue value)
+        {
+            return new FeederEnumNewMember
+            {
+                RawSheetValue = value.RawValue,
+                MemberName = value.RawValue,
+                FirstSheetRow = value.FirstRow,
+                SourceTab = value.SourceTab,
+                RejectReason = value.StatusDetail.IsNullOrWhitespace()
+                    ? "không phải tên C# hợp lệ"
+                    : value.StatusDetail,
+            };
+        }
+
+        private static int CountWritable(List<FeederEnumSheetValue> values)
+        {
+            int count = 0;
+            for (int i = 0; i < values.Count; i++)
+            {
+                if (values[i].IsWritable)
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
         private static void BuildExistingEnumChange(FeederEnumUpdatePlan plan,
             Dictionary<string, FeederEnumFileChange> filesByPath, FeederEnumChange change, Type existing,
-            List<FeederEnumSheetValue> writable, string enumScriptAssetPath)
+            List<FeederEnumSheetValue> values, string enumScriptAssetPath)
         {
             change.EnumName = existing.Name;
             change.EnumFullName = existing.FullName;
@@ -299,34 +331,21 @@ namespace Feeder
 
             HashSet<string> existingNames = new HashSet<string>(Enum.GetNames(existing), StringComparer.Ordinal);
 
-            List<FeederEnumSheetValue> missing = new List<FeederEnumSheetValue>();
-            for (int i = 0; i < writable.Count; i++)
+            int missingCount = 0;
+            int rejectedCount = 0;
+            for (int i = 0; i < values.Count; i++)
             {
-                if (!existingNames.Contains(writable[i].RawValue))
+                if (!values[i].IsWritable)
                 {
-                    missing.Add(writable[i]);
+                    rejectedCount++;
+                }
+                else if (!existingNames.Contains(values[i].RawValue))
+                {
+                    missingCount++;
                 }
             }
 
-            foreach (string name in existingNames)
-            {
-                bool inSheet = false;
-                for (int i = 0; i < writable.Count; i++)
-                {
-                    if (string.Equals(writable[i].RawValue, name, StringComparison.Ordinal))
-                    {
-                        inSheet = true;
-                        break;
-                    }
-                }
-
-                if (!inSheet && !string.Equals(name, NoneMemberName, StringComparison.Ordinal))
-                {
-                    change.Orphans.Add(name);
-                }
-            }
-
-            if (missing.Count == 0)
+            if (missingCount == 0 && rejectedCount == 0)
             {
                 return;
             }
@@ -353,11 +372,11 @@ namespace Feeder
             FeederEnumSourceEditor.GetNumbering(existing, out decimal next, out decimal ceiling, out string keyword);
             change.UnderlyingTypeKeyword = keyword;
 
-            if (!change.IsBlocked && next + missing.Count - 1 > ceiling)
+            if (!change.IsBlocked && next + missingCount - 1 > ceiling)
             {
                 decimal room = ceiling - next + 1;
                 change.BlockedReason =
-                    $"enum {existing.Name} : {keyword} chỉ còn {room} chỗ nhưng cần {missing.Count}. " +
+                    $"enum {existing.Name} : {keyword} chỉ còn {room} chỗ nhưng cần {missingCount}. " +
                     "Đổi underlying type sang int/ushort trước.";
             }
 
@@ -370,16 +389,41 @@ namespace Feeder
             change.BodyIsEmpty = bodyEmpty;
             change.Indent = indent;
 
-            for (int i = 0; i < missing.Count; i++)
+            int assigned = 0;
+            for (int i = 0; i < values.Count; i++)
             {
+                FeederEnumSheetValue value = values[i];
+                if (!value.IsWritable)
+                {
+                    if (!FeederEnumSourceEditor.BodyHasRejectedComment(location.Text, location.OpenBraceIndex,
+                            location.CloseBraceIndex, value.RawValue))
+                    {
+                        change.NewMembers.Add(RejectedMember(value));
+                    }
+
+                    continue;
+                }
+
+                if (existingNames.Contains(value.RawValue))
+                {
+                    continue;
+                }
+
                 change.NewMembers.Add(new FeederEnumNewMember
                 {
-                    RawSheetValue = missing[i].RawValue,
-                    MemberName = missing[i].MemberName ?? missing[i].RawValue,
-                    Value = next + i,
-                    FirstSheetRow = missing[i].FirstRow,
-                    SourceTab = missing[i].SourceTab,
+                    RawSheetValue = value.RawValue,
+                    MemberName = value.MemberName ?? value.RawValue,
+                    Value = next + assigned,
+                    FirstSheetRow = value.FirstRow,
+                    SourceTab = value.SourceTab,
                 });
+                assigned++;
+            }
+
+            // comment lỗi đã ghi từ lần trước vẫn nằm trong file: không còn gì để thêm
+            if (change.NewMembers.Count == 0)
+            {
+                return;
             }
 
             if (!filesByPath.TryGetValue(location.AssetPath, out FeederEnumFileChange file))
@@ -399,34 +443,11 @@ namespace Feeder
             file.Enums.Add(change);
         }
 
-        private static void LogRejected(string token, List<FeederEnumSheetValue> rejected)
-        {
-            if (rejected.Count == 0)
-            {
-                return;
-            }
-
-            List<string> lines = new List<string>();
-            for (int i = 0; i < rejected.Count; i++)
-            {
-                FeederEnumSheetValue value = rejected[i];
-                lines.Add($"  • [{value.SourceTab}] dòng sheet {value.FirstRow + 1}: " +
-                          $"'{value.RawValue}' — {value.StatusDetail}");
-            }
-
-            Debug.LogWarning(
-                $"[Update Enum] {token}: bỏ qua {rejected.Count} giá trị, KHÔNG sinh member cho chúng. " +
-                "Sửa lại ô trong Google Sheet rồi Load Sheet và chạy lại — để nguyên thì Generate Assets " +
-                "sẽ ghi None cho mọi dòng dùng ô đó.\n" + string.Join("\n", lines.ToArray()));
-        }
-
+        // giữ nguyên thứ tự quét (tab rồi tới dòng), giá trị lỗi nằm chung danh sách để comment ra đúng chỗ
         private static void MergeValues(List<FeederEnumColumnScan> columns,
-            out List<FeederEnumSheetValue> writable, out List<FeederEnumSheetValue> rejected,
-            out List<string> warnings, out List<string> tabs)
+            out List<FeederEnumSheetValue> values, out List<string> tabs)
         {
-            writable = new List<FeederEnumSheetValue>();
-            rejected = new List<FeederEnumSheetValue>();
-            warnings = new List<string>();
+            values = new List<FeederEnumSheetValue>();
             tabs = new List<string>();
 
             HashSet<string> seen = new HashSet<string>(StringComparer.Ordinal);
@@ -438,22 +459,12 @@ namespace Feeder
                     tabs.Add(column.SourceTab);
                 }
 
-                warnings.AddRange(column.Warnings);
                 for (int i = 0; i < column.Values.Count; i++)
                 {
                     FeederEnumSheetValue value = column.Values[i];
-                    if (!seen.Add(value.RawValue))
+                    if (seen.Add(value.RawValue))
                     {
-                        continue;
-                    }
-
-                    if (value.IsWritable)
-                    {
-                        writable.Add(value);
-                    }
-                    else
-                    {
-                        rejected.Add(value);
+                        values.Add(value);
                     }
                 }
             }
@@ -535,6 +546,7 @@ namespace Feeder
                     OriginalHadBom = source.OriginalHadBom,
                     Newline = source.Newline,
                     NewText = BuildFileText(source, all),
+                    ErrorLineMarker = FeederEnumSourceEditor.InvalidMemberMarker,
                 };
 
                 for (int j = 0; j < all.Count; j++)
@@ -548,14 +560,6 @@ namespace Feeder
                         Payload = change,
                     };
                     item.Warnings.AddRange(change.Warnings);
-                    AppendRejectedWarnings(item, change);
-                    if (change.Orphans.Count > 0)
-                    {
-                        item.Warnings.Add(
-                            $"{change.Orphans.Count} member có trong enum nhưng không có trong sheet " +
-                            $"(chỉ báo, không xoá): {string.Join(", ", change.Orphans.ToArray())}");
-                    }
-
                     file.Items.Add(item);
                 }
 
@@ -593,28 +597,25 @@ namespace Feeder
             string tabs = change.SourceTabs.Count > 0
                 ? $" · từ tab {string.Join(", ", change.SourceTabs.ToArray())}"
                 : string.Empty;
-            return $"+{change.NewMembers.Count} giá trị · {change.UnderlyingTypeKeyword}{tabs}";
+
+            int rejected = CountRejected(change);
+            string invalid = rejected > 0 ? $" · {rejected} không hợp lệ" : string.Empty;
+            return $"+{change.NewMembers.Count - rejected} giá trị{invalid} · " +
+                   $"{change.UnderlyingTypeKeyword}{tabs}";
         }
 
-        private static void AppendRejectedWarnings(FeederChangeItem item, FeederEnumChange change)
+        private static int CountRejected(FeederEnumChange change)
         {
-            if (change.RejectedValues.Count == 0)
+            int count = 0;
+            for (int i = 0; i < change.NewMembers.Count; i++)
             {
-                return;
+                if (change.NewMembers[i].IsRejected)
+                {
+                    count++;
+                }
             }
 
-            List<string> names = new List<string>();
-            for (int i = 0; i < change.RejectedValues.Count && i < 8; i++)
-            {
-                names.Add($"'{change.RejectedValues[i].RawValue}'");
-            }
-
-            string suffix = change.RejectedValues.Count > names.Count
-                ? $" (+{change.RejectedValues.Count - names.Count} nữa)"
-                : string.Empty;
-            item.Warnings.Add(
-                $"{change.RejectedValues.Count} giá trị bị loại vì không phải tên C# hợp lệ: " +
-                $"{string.Join(", ", names.ToArray())}{suffix}. Những dòng này sẽ lỗi Enum.Parse khi Generate Assets.");
+            return count;
         }
 
         // ---------- ghi ----------
@@ -638,7 +639,7 @@ namespace Feeder
                 {
                     if (files[i].Items[j].Payload is FeederEnumChange change)
                     {
-                        memberCount += change.NewMembers.Count;
+                        memberCount += change.NewMembers.Count - CountRejected(change);
                     }
                 }
             }

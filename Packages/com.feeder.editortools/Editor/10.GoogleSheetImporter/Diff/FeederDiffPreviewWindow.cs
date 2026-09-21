@@ -682,16 +682,21 @@ namespace Feeder
             FeederDiffLine line = diffs[row.File].Hunks[row.Hunk].Lines[row.Line];
 
             // dòng bị hạ kiểu (enum không tồn tại → string) tô vàng để nổi hơn cả xanh added;
+            // dòng sai hẳn (giá trị sheet chỉ ghi ra được dạng comment) tô đỏ;
             // dòng removed giữ nguyên đỏ vì đó là dấu vết cũ đang được gỡ đi
-            bool warn = line.Op != FeederDiffOp.Removed && IsWarningLine(row.File, line);
+            bool marked = line.Op != FeederDiffOp.Removed;
+            bool error = marked && IsMarkedLine(changeSet.Files[row.File].ErrorLineMarker, line);
+            bool warn = marked && !error && IsMarkedLine(changeSet.Files[row.File].WarningLineMarker, line);
 
-            Color background = warn
-                ? FeederDiffStyles.WarnRow
-                : line.Op == FeederDiffOp.Added
-                    ? FeederDiffStyles.AddedRow
-                    : line.Op == FeederDiffOp.Removed
-                        ? FeederDiffStyles.RemovedRow
-                        : Color.clear;
+            Color background = error
+                ? FeederDiffStyles.ErrorRow
+                : warn
+                    ? FeederDiffStyles.WarnRow
+                    : line.Op == FeederDiffOp.Added
+                        ? FeederDiffStyles.AddedRow
+                        : line.Op == FeederDiffOp.Removed
+                            ? FeederDiffStyles.RemovedRow
+                            : Color.clear;
 
             if (background.a > 0f)
             {
@@ -709,7 +714,7 @@ namespace Feeder
 
             float codeX = FeederDiffStyles.CodeOffsetX;
 
-            if (FeederDiffStyles.HasMonoFont && line.HlEnd > line.HlStart && !warn)
+            if (FeederDiffStyles.HasMonoFont && line.HlEnd > line.HlStart && !warn && !error)
             {
                 float charWidth = FeederDiffStyles.CharWidth;
                 Rect wordRect = new Rect(
@@ -736,9 +741,8 @@ namespace Feeder
                 FeederTextDiff.SignOf(line.Op).ToString(), FeederDiffStyles.Sign);
         }
 
-        private bool IsWarningLine(int fileIndex, FeederDiffLine line)
+        private static bool IsMarkedLine(string marker, FeederDiffLine line)
         {
-            string marker = changeSet.Files[fileIndex].WarningLineMarker;
             if (string.IsNullOrEmpty(marker))
             {
                 return false;

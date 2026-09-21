@@ -69,6 +69,36 @@ The first row contains the generated type name and the second row contains typed
 
 Credential JSON files are project-local secrets. No credential, Spreadsheet ID, config asset, or cached sheet data is included in this package.
 
+## Scene Loader
+
+Browse, open and add the project's scenes from one window.
+
+**Open it**
+
+- Click **Scenes** next to Play/Pause/Step in the main toolbar. The arrow next to it lists Favorites, Recent, Add Additive and Open Scene Loader.
+- Press `Alt+S`. Rebind it from the shortcut chip at the bottom of the window, or in **Edit > Shortcuts** (`Feeder/Scene Loader/Toggle Window`).
+- Use **Tools > Feeder > Scene Loader**.
+
+On Unity 6.3 and newer the button is a main toolbar element. If you hid it, right-click the main toolbar and enable **Feeder/Scene Loader**.
+
+**Use it**
+
+- Double-click a scene to open it. Alt+Click or the `+` button adds it additively. The star adds it to Favorites.
+- Drag a scene into the Hierarchy or onto the LOADED strip to add it. Click a LOADED chip to make it the active scene; its close button removes it.
+- Opening and adding scenes is disabled in Play Mode.
+
+**Configure it**
+
+- **Project Settings > Feeder > Scene Loader**: Scan Roots (folders searched for scenes, default `Assets`), Top-Level Order, and Folder Rules (label, color, hidden per folder).
+- Right-click a folder in the window for Edit Folder..., Color, Hide/Unhide and Show in Project. Drag top-level folders in the sidebar to reorder them. Hidden folders come back with the gear menu > Show Hidden Folders.
+
+**Saved files**
+
+| File | Content | Commit |
+|------|---------|--------|
+| `ProjectSettings/FeederSceneLoader.asset` | Scan roots, folder order, folder rules | Yes, shared with the team |
+| `UserSettings/FeederSceneLoader.asset` | Favorites, recent scenes, expanded folders | No, per machine |
+
 ---
 
 ## License

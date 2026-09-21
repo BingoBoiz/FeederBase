@@ -33,7 +33,6 @@ namespace Feeder
         public string FieldName;
         public string EnumTypeToken;
         public List<FeederEnumSheetValue> Values = new List<FeederEnumSheetValue>();
-        public List<string> Warnings = new List<string>();
     }
 
     public struct FeederEnumNewMember
@@ -43,6 +42,11 @@ namespace Feeder
         public decimal Value;
         public int FirstSheetRow;
         public string SourceTab;
+
+        // giá trị sheet không dùng được: ghi ra file dưới dạng comment, không chiếm số
+        public string RejectReason;
+
+        public bool IsRejected => !string.IsNullOrEmpty(RejectReason);
     }
 
     public sealed class FeederEnumChange
@@ -72,8 +76,6 @@ namespace Feeder
         public string Indent = "    ";
 
         public List<FeederEnumNewMember> NewMembers = new List<FeederEnumNewMember>();
-        public List<FeederEnumSheetValue> RejectedValues = new List<FeederEnumSheetValue>();
-        public List<string> Orphans = new List<string>();
         public List<string> Warnings = new List<string>();
 
         public string BlockedReason;

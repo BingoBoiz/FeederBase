@@ -7,7 +7,6 @@ namespace Feeder
     internal static class FIconCatalog
     {
         public const SdfIconType MenuWindowIcon = SdfIconType.LayoutTextSidebar;
-        public const SdfIconType SceneLoaderWindowIcon = SdfIconType.Map;
         public const SdfIconType ScriptTemplateWindowIcon = SdfIconType.FileEarmarkText;
 
         public const SdfIconType AssetCollectorToolIcon = SdfIconType.FolderSymlink;
@@ -47,7 +46,6 @@ namespace Feeder
         }
 
         public static EditorIcon WindowMenuTitleIcon => EditorIcons.List;
-        public static EditorIcon SceneLoaderTitleIcon => EditorIcons.Folder;
         public static EditorIcon ScriptTemplateTitleIcon => EditorIcons.File;
         public static EditorIcon CharacterMeshUpdateTitleIcon => EditorIcons.Pen;
         public static EditorIcon MissingScriptTitleIcon => EditorIcons.AlertCircle;

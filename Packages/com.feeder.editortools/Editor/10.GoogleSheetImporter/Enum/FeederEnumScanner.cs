@@ -140,8 +140,6 @@ namespace Feeder
                 {
                     value.Status = FeederEnumValueStatus.DuplicateIgnoreCase;
                     value.StatusDetail = $"trùng với '{existing}' nếu bỏ qua hoa/thường (dòng sheet {row + 1})";
-                    scan.Warnings.Add(
-                        $"[{sourceTab}] dòng sheet {row + 1}: '{raw}' và '{existing}' chỉ khác hoa/thường — bỏ qua '{raw}'.");
                     scan.Values.Add(value);
                     continue;
                 }
@@ -150,12 +148,6 @@ namespace Feeder
                 value.Status = Classify(raw, out string memberName, out string detail);
                 value.MemberName = memberName;
                 value.StatusDetail = detail;
-                if (value.Status == FeederEnumValueStatus.Invalid)
-                {
-                    scan.Warnings.Add(
-                        $"[{sourceTab}] dòng sheet {row + 1}: '{raw}' không phải tên C# hợp lệ ({detail}).");
-                }
-
                 scan.Values.Add(value);
             }
         }

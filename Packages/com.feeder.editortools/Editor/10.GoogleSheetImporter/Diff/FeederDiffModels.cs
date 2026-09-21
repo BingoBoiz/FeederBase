@@ -81,6 +81,12 @@ namespace Feeder
         /// </summary>
         public string WarningLineMarker;
 
+        /// <summary>
+        /// Dòng nào trong nội dung mới chứa chuỗi này sẽ được tô nền đỏ trong preview.
+        /// Dành cho thứ sai hẳn (giá trị sheet không thành member được), ưu tiên hơn WarningLineMarker.
+        /// </summary>
+        public string ErrorLineMarker;
+
         public Func<IReadOnlyList<FeederChangeItem>, string> Rebuild;
 
         public bool IsNewFile => OriginalText == null;
