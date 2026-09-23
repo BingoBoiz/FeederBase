@@ -21,6 +21,7 @@ namespace Feeder
     {
         private static List<Type> cachedEnumTypes;
         private static HashSet<string> cachedTypeNames;
+        private static HashSet<string> cachedNamespaces;
 
         public static List<Type> EnumTypes
         {
@@ -45,6 +46,16 @@ namespace Feeder
             return cachedTypeNames.Contains(fullName);
         }
 
+        public static bool IsProjectNamespace(string ns)
+        {
+            if (cachedNamespaces == null)
+            {
+                GetEnums();
+            }
+
+            return cachedNamespaces.Contains(ns);
+        }
+
         [InitializeOnLoadMethod]
         private static void RegisterCacheInvalidation()
         {
@@ -56,12 +67,14 @@ namespace Feeder
         {
             cachedEnumTypes = null;
             cachedTypeNames = null;
+            cachedNamespaces = null;
         }
 
         public static void GetEnums()
         {
             cachedEnumTypes = new List<Type>();
             cachedTypeNames = new HashSet<string>(StringComparer.Ordinal);
+            cachedNamespaces = new HashSet<string>(StringComparer.Ordinal);
 
             HashSet<string> projectAssemblyNames = GetProjectAssemblyNames();
             System.Reflection.Assembly[] loaded = AppDomain.CurrentDomain.GetAssemblies();
@@ -81,6 +94,12 @@ namespace Feeder
                     }
 
                     cachedTypeNames.Add(ToFullName(type));
+                    for (string ns = type.Namespace; !string.IsNullOrEmpty(ns) && cachedNamespaces.Add(ns);)
+                    {
+                        int dot = ns.LastIndexOf('.');
+                        ns = dot < 0 ? null : ns.Substring(0, dot);
+                    }
+
                     if (type.IsEnum)
                     {
                         cachedEnumTypes.Add(type);

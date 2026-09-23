@@ -51,6 +51,10 @@ public class {0}Data : ScriptableObject
     public List<{0}> {2} = new List<{0}>();
 }";
 
+        private static readonly string[] TemplateUsings = Regex
+            .Matches(ScriptTemplate, @"^using ([A-Za-z0-9_.]+);", RegexOptions.Multiline)
+            .Cast<Match>().Select(x => x.Groups[1].Value).ToArray();
+
         private static readonly string FieldTemplate = "\tpublic {0} {1};";
 
         /// <summary>
@@ -113,7 +117,6 @@ public class {0}Data : ScriptableObject
             }
 
             FeederEnumUtils.SplitFullName(classFullName, out string classNamespace, out string className);
-            bool qualifyTypes = classNamespace.Length > 0;
 
             if (rawFields == null || rawFields.Count == 0)
             {
@@ -157,7 +160,7 @@ public class {0}Data : ScriptableObject
                             if (status == FeederEnumResolveStatus.Resolved)
                             {
                                 resolvedTypeName = true;
-                                fieldType = ToCSharpTypeName(enumType, qualifyTypes);
+                                fieldType = ToCSharpTypeName(enumType, classNamespace);
                             }
                             else
                             {
@@ -175,7 +178,7 @@ public class {0}Data : ScriptableObject
                             else
                             {
                                 resolvedTypeName = true;
-                                fieldType = ToCSharpTypeName(componentType, qualifyTypes);
+                                fieldType = ToCSharpTypeName(componentType, classNamespace);
                             }
                         }
                         else
@@ -215,14 +218,110 @@ public class {0}Data : ScriptableObject
                 .Replace("{1}", fieldBuilder.ToString())
                 .Replace("{2}", listField) + Environment.NewLine;
 
-            return qualifyTypes ? WrapInNamespace(generated, classNamespace) : generated;
+            return classNamespace.Length > 0 ? WrapInNamespace(generated, classNamespace) : generated;
         }
 
-        // inside a namespace a short name can bind to a same-named type of that namespace, so qualify from global
-        private static string ToCSharpTypeName(Type type, bool qualify)
+        // the shortest name that still binds to this type from inside the generated class
+        private static string ToCSharpTypeName(Type type, string classNamespace)
         {
             string fullName = FeederEnumUtils.ToFullName(type);
-            return qualify ? "global::" + fullName : fullName;
+            FeederEnumUtils.SplitFullName(fullName, out string _, out string shortName);
+            if (!type.IsNested && BindSimpleName(shortName, classNamespace) == type)
+            {
+                return shortName;
+            }
+
+            int dot = fullName.IndexOf('.');
+            if (dot > 0 && ReachesGlobalNamespace(fullName.Substring(0, dot), classNamespace))
+            {
+                return fullName;
+            }
+
+            return "global::" + fullName;
+        }
+
+        // same order as the compiler: the class namespace, each parent namespace, global, then the file's usings
+        private static Type BindSimpleName(string name, string classNamespace)
+        {
+            string scope = classNamespace;
+            while (true)
+            {
+                string candidate = scope.Length == 0 ? name : $"{scope}.{name}";
+                if (FeederEnumUtils.IsProjectNamespace(candidate))
+                {
+                    return null;
+                }
+
+                Type found = FindLoadedType(candidate);
+                if (found != null)
+                {
+                    return found;
+                }
+
+                if (scope.Length == 0)
+                {
+                    break;
+                }
+
+                FeederEnumUtils.SplitFullName(scope, out scope, out string _);
+            }
+
+            Type imported = null;
+            for (int i = 0; i < TemplateUsings.Length; i++)
+            {
+                Type found = FindLoadedType($"{TemplateUsings[i]}.{name}");
+                if (found == null)
+                {
+                    continue;
+                }
+
+                if (imported != null)
+                {
+                    return null;
+                }
+
+                imported = found;
+            }
+
+            return imported;
+        }
+
+        // a qualified name only works if nothing between the class and global namespace shadows its first segment
+        private static bool ReachesGlobalNamespace(string root, string classNamespace)
+        {
+            for (string scope = classNamespace; scope.Length > 0;)
+            {
+                string candidate = $"{scope}.{root}";
+                if (FeederEnumUtils.IsProjectNamespace(candidate) || FindLoadedType(candidate) != null)
+                {
+                    return false;
+                }
+
+                FeederEnumUtils.SplitFullName(scope, out scope, out string _);
+            }
+
+            return FindLoadedType(root) == null;
+        }
+
+        private static Type FindLoadedType(string fullName)
+        {
+            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                try
+                {
+                    Type type = assembly.GetType(fullName, false);
+                    if (type != null)
+                    {
+                        return type;
+                    }
+                }
+                catch (Exception)
+                {
+                    // dynamic or broken assemblies cannot answer GetType; they hold no type the generated class can see
+                }
+            }
+
+            return null;
         }
 
         private static FeederFieldFallback BuildEnumFallback(int columnIndex, string rawField, string fieldName,
