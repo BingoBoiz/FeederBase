@@ -549,13 +549,6 @@ namespace Feeder
                 }
             }
 
-            bool wrap = !string.IsNullOrEmpty(first.WrapNamespace);
-            if (wrap)
-            {
-                builder.Append("namespace ").Append(first.WrapNamespace).Append(newline)
-                    .Append('{').Append(newline);
-            }
-
             for (int i = 0; i < group.Count; i++)
             {
                 if (i > 0)
@@ -563,12 +556,7 @@ namespace Feeder
                     builder.Append(newline).Append(newline);
                 }
 
-                AppendEnumBlock(builder, group[i], newline, wrap ? "    " : group[i].BlockIndent);
-            }
-
-            if (wrap)
-            {
-                builder.Append(newline).Append('}');
+                AppendEnumBlock(builder, group[i], newline, group[i].BlockIndent);
             }
 
             return builder.ToString();
@@ -589,18 +577,7 @@ namespace Feeder
                     }
                 }
 
-                if (!string.IsNullOrEmpty(change.WrapNamespace))
-                {
-                    builder.Append("namespace ").Append(change.WrapNamespace).Append(newline)
-                        .Append('{').Append(newline);
-                    AppendEnumBlock(builder, change, newline, "    ");
-                    builder.Append(newline).Append('}');
-                }
-                else
-                {
-                    AppendEnumBlock(builder, change, newline, change.BlockIndent);
-                }
-
+                AppendEnumBlock(builder, change, newline, change.BlockIndent);
                 return builder.ToString();
             }
 
@@ -617,15 +594,15 @@ namespace Feeder
             return builder.ToString();
         }
 
-        public static string BuildNewFileText(IList<FeederEnumChange> changes, string newline, string sheetNamespace)
+        public static string BuildNewFileText(IList<FeederEnumChange> changes, string newline, string ns)
         {
-            bool wrap = !string.IsNullOrEmpty(sheetNamespace) && sheetNamespace.Trim().Length > 0;
+            bool wrap = !string.IsNullOrEmpty(ns);
             string blockIndent = wrap ? "    " : string.Empty;
 
             StringBuilder builder = new StringBuilder();
             if (wrap)
             {
-                builder.Append("namespace ").Append(sheetNamespace.Trim()).Append(newline)
+                builder.Append("namespace ").Append(ns).Append(newline)
                     .Append('{').Append(newline);
             }
 
@@ -747,15 +724,43 @@ namespace Feeder
             return !string.IsNullOrEmpty(masked) && NamespacePattern.IsMatch(masked);
         }
 
-        public static bool ContainsEnumDeclaration(string masked, string enumName)
+        public static bool ContainsEnumDeclaration(string masked, string enumName, string scope)
         {
             if (string.IsNullOrEmpty(masked) || string.IsNullOrEmpty(enumName))
             {
                 return false;
             }
 
-            return Regex.IsMatch(masked,
+            Regex pattern = new Regex(
                 $@"(?<![A-Za-z0-9_])enum\s+{Regex.Escape(enumName)}\s*(:\s*[A-Za-z0-9_\.]+\s*)?\{{");
+            foreach (Match match in pattern.Matches(masked))
+            {
+                if (GetEnclosingScope(masked, match.Index) == scope)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static readonly Regex ConditionalDirectivePattern =
+            new Regex(@"^[ \t]*#[ \t]*(if|endif)\b", RegexOptions.Multiline);
+
+        public static bool IsInsideConditionalBlock(string masked, int offset)
+        {
+            int depth = 0;
+            foreach (Match match in ConditionalDirectivePattern.Matches(masked))
+            {
+                if (match.Index >= offset)
+                {
+                    break;
+                }
+
+                depth += match.Groups[1].Value == "if" ? 1 : -1;
+            }
+
+            return depth > 0;
         }
 
         private static string MemberLine(FeederEnumNewMember member)

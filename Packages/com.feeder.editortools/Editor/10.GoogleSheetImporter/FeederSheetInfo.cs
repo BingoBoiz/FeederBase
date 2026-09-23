@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using NabaGame.Core.Runtime.Extensions;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.Serialization;
 #if ODIN_INSPECTOR
 using Sirenix.OdinInspector;
 using Sirenix.Serialization;
@@ -18,9 +19,14 @@ namespace Feeder
         [Sirenix.OdinInspector.FolderPath(ParentFolder = "Assets", RequireExistingPath = true)]
         public string ScriptFolder;
 
-        public string Namespace;
+        public List<MonoScript> EnumScripts = new List<MonoScript>();
 
-        public MonoScript EnumScript;
+        // namespace now lives in the A1 cell; kept only so older sheets show a warning until it is cleared
+        [FormerlySerializedAs("Namespace"), HideInInspector]
+        public string LegacyNamespace;
+
+        [FormerlySerializedAs("EnumScript"), HideInInspector]
+        public MonoScript LegacyEnumScript;
 
         [Sirenix.OdinInspector.FolderPath(ParentFolder = "Assets", RequireExistingPath = true)]
         public string AssetFolder;

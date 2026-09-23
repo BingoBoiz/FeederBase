@@ -30,25 +30,23 @@ namespace Feeder
         public string ScriptFolder;
 
         [FoldoutGroup("Sheet Info", true),
-         ValueDropdown(nameof(GetNamespaceOptions), AppendNextDrawer = true),
-         PropertyTooltip("Namespace của {Class}Data.cs và của enum do Update Enum tạo. Để trống = global scope.\n" +
-                         "Token enum trần trong header CHỈ khớp enum cùng namespace này."),
-         OnValueChanged("OnNamespaceChanged")]
-        public string Namespace;
+         PropertyTooltip("Các file enum mà Update Enum được phép ghi. Header ghi tên đầy đủ: 'TenEnum' là enum " +
+                         "global, 'Ns.TenEnum' là enum trong namespace Ns.\n" +
+                         "• Enum đã có: chỉ thêm giá trị nếu nó nằm trong các file này hoặc ngay trong Script Folder, " +
+                         "còn lại chỉ báo thiếu.\n" +
+                         "• Enum mới 'Ns.TenEnum': tạo trong file đầu tiên có khối 'namespace Ns { }'. Enum mới global: " +
+                         "file đầu tiên không khai báo namespace.\n" +
+                         "Để trống = mỗi enum mới một file trong Script Folder."),
+         OnValueChanged("OnEnumScriptsChanged", true)]
+        public List<MonoScript> EnumScripts;
 
-        [FoldoutGroup("Sheet Info", true), OnValueChanged("OnEnumScriptChanged")]
-        public MonoScript EnumScript;
-
-        private static IEnumerable<ValueDropdownItem<string>> GetNamespaceOptions()
-        {
-            yield return new ValueDropdownItem<string>("<không có namespace>", string.Empty);
-
-            List<string> all = FeederEnumUtils.ProjectNamespaces;
-            for (int i = 0; i < all.Count; i++)
-            {
-                yield return new ValueDropdownItem<string>(all[i], all[i]);
-            }
-        }
+        [FoldoutGroup("Sheet Info", true), LabelText("Namespace (cũ)"),
+         ShowIf("@!string.IsNullOrEmpty(LegacyNamespace)"),
+         InfoBox("Trường này không còn tác dụng: class sinh ra theo đúng ô A1 ('RawItem' là global, " +
+                 "'MyGame.RawItem' nằm trong namespace MyGame). Nếu class của sheet cần namespace thì sửa A1 trên " +
+                 "sheet, rồi xoá trường này.", InfoMessageType.Warning),
+         OnValueChanged("OnLegacyNamespaceChanged")]
+        public string LegacyNamespace;
 
         [FoldoutGroup("Sheet Info", true),
          Sirenix.OdinInspector.FolderPath(ParentFolder = "Assets", RequireExistingPath = true),
@@ -268,11 +266,12 @@ namespace Feeder
         public FeederSheetInfoView(FeederSheetInfo sheetInfo)
         {
             info = sheetInfo;
+            MigrateLegacyEnumScript(sheetInfo);
             sheetName = sheetInfo.sheetName;
             SpreadsheetID = sheetInfo.SpreadsheetID;
             ScriptFolder = sheetInfo.ScriptFolder;
-            Namespace = sheetInfo.Namespace;
-            EnumScript = sheetInfo.EnumScript;
+            EnumScripts = new List<MonoScript>(sheetInfo.EnumScripts);
+            LegacyNamespace = sheetInfo.LegacyNamespace;
             AssetFolder = sheetInfo.AssetFolder;
             SpriteAssetFolder = sheetInfo.SpriteAssetFolder;
             SkeletonDataFolder = sheetInfo.SkeletonDataFolder;
@@ -289,8 +288,8 @@ namespace Feeder
             sheetName = sheetInfo.sheetName;
             SpreadsheetID = sheetInfo.SpreadsheetID;
             ScriptFolder = sheetInfo.ScriptFolder;
-            Namespace = sheetInfo.Namespace;
-            EnumScript = sheetInfo.EnumScript;
+            EnumScripts = new List<MonoScript>(sheetInfo.EnumScripts);
+            LegacyNamespace = sheetInfo.LegacyNamespace;
             AssetFolder = sheetInfo.AssetFolder;
             SpriteAssetFolder = sheetInfo.SpriteAssetFolder;
             SkeletonDataFolder = sheetInfo.SkeletonDataFolder;
@@ -324,25 +323,56 @@ namespace Feeder
             EditorUtility.SetDirty(info);
         }
 
-        private static readonly System.Text.RegularExpressions.Regex NamespaceIdentifier =
-            new System.Text.RegularExpressions.Regex(@"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$");
-
-        private void OnNamespaceChanged()
+        private static void MigrateLegacyEnumScript(FeederSheetInfo sheetInfo)
         {
-            Namespace = (Namespace ?? string.Empty).Trim().Trim('.');
-            if (!Namespace.IsNullOrWhitespace() && !NamespaceIdentifier.IsMatch(Namespace))
+            sheetInfo.EnumScripts ??= new List<MonoScript>();
+            if (sheetInfo.LegacyEnumScript == null)
             {
-                infoBoxMessage = $"'{Namespace}' không phải namespace hợp lệ — file sinh ra sẽ không compile.";
+                return;
             }
 
-            info.Namespace = Namespace;
+            if (!sheetInfo.EnumScripts.Contains(sheetInfo.LegacyEnumScript))
+            {
+                sheetInfo.EnumScripts.Insert(0, sheetInfo.LegacyEnumScript);
+            }
+
+            sheetInfo.LegacyEnumScript = null;
+            EditorUtility.SetDirty(sheetInfo);
+        }
+
+        private void OnEnumScriptsChanged()
+        {
+            info.EnumScripts = new List<MonoScript>(EnumScripts ?? new List<MonoScript>());
             EditorUtility.SetDirty(info);
         }
 
-        private void OnEnumScriptChanged()
+        private void OnLegacyNamespaceChanged()
         {
-            info.EnumScript = EnumScript;
+            LegacyNamespace = (LegacyNamespace ?? string.Empty).Trim().Trim('.');
+            info.LegacyNamespace = LegacyNamespace;
             EditorUtility.SetDirty(info);
+        }
+
+        private string SelectedClassCell =>
+            cells != null && cells.GetLength(0) > 0 && cells.GetLength(1) > 0 ? cells[0, 0] : null;
+
+        private List<string> GetEnumScriptPaths()
+        {
+            List<string> paths = new List<string>();
+            if (EnumScripts == null)
+            {
+                return paths;
+            }
+
+            for (int i = 0; i < EnumScripts.Count; i++)
+            {
+                if (EnumScripts[i] != null)
+                {
+                    paths.Add(AssetDatabase.GetAssetPath(EnumScripts[i]));
+                }
+            }
+
+            return paths;
         }
 
         private void OnAssetFolderChanged()
@@ -380,9 +410,9 @@ namespace Feeder
          GUIColor(0.52f, 0.88f, 0.62f), EnableIf("@CanUpdateEnum")]
         public void UpdateEnum()
         {
-            if (ScriptFolder.IsNullOrWhitespace() && EnumScript == null)
+            if (!HasEnumTarget)
             {
-                infoBoxMessage = "Cần điền Script Folder hoặc gán Enum Script.";
+                infoBoxMessage = "Cần điền Script Folder hoặc thêm Enum Scripts.";
                 return;
             }
 
@@ -400,9 +430,9 @@ namespace Feeder
          GUIColor(0.72f, 0.87f, 0.76f), EnableIf("@CanUpdateAllEnums")]
         public void UpdateAllEnums()
         {
-            if (ScriptFolder.IsNullOrWhitespace() && EnumScript == null)
+            if (!HasEnumTarget)
             {
-                infoBoxMessage = "Cần điền Script Folder hoặc gán Enum Script.";
+                infoBoxMessage = "Cần điền Script Folder hoặc thêm Enum Scripts.";
                 return;
             }
 
@@ -428,12 +458,8 @@ namespace Feeder
 
         private void OpenEnumPreview(List<FeederEnumColumnScan> scans)
         {
-            string sheetTypeName = cells != null && cells.GetLength(0) > 0 && cells.GetLength(1) > 0
-                ? cells[0, 0]
-                : string.Empty;
-            string enumScriptPath = EnumScript != null ? AssetDatabase.GetAssetPath(EnumScript) : null;
             FeederEnumUpdatePlan plan = FeederEnumUpdater.BuildPlan(scans, BuildAssetFolderPath(ScriptFolder),
-                sheetTypeName, enumScriptPath, Namespace);
+                SelectedClassCell ?? string.Empty, GetEnumScriptPaths());
 
             if (!plan.HasApplicableChange)
             {
@@ -473,8 +499,8 @@ namespace Feeder
                 return;
             }
 
-            string className = cells != null && cells.GetLength(0) > 0 && cells.GetLength(1) > 0 ? cells[0, 0] : null;
-            string newText = FeederScriptGenerator.BuildScriptText(className, rawFields, Namespace,
+            string classFullName = (SelectedClassCell ?? string.Empty).Trim();
+            string newText = FeederScriptGenerator.BuildScriptText(classFullName, rawFields,
                 out List<string> warnings, out List<FeederFieldFallback> fallbacks);
             if (newText == null)
             {
@@ -482,6 +508,7 @@ namespace Feeder
                 return;
             }
 
+            FeederEnumUtils.SplitFullName(classFullName, out string _, out string className);
             string assetPath = $"{BuildAssetFolderPath(ScriptFolder)}/{className}Data.cs";
             string originalText = FeederEnumSourceEditor.TryReadText(assetPath, out bool hadBom);
 
@@ -495,10 +522,17 @@ namespace Feeder
             };
             FeederChangeItem item = new FeederChangeItem
             {
-                Title = $"class {className} / {className}Data",
+                Title = $"class {classFullName} / {className}Data",
                 Subtitle = $"{rawFields.Count} cột",
             };
             item.Warnings.AddRange(warnings);
+            if (!LegacyNamespace.IsNullOrWhitespace() && classFullName == className)
+            {
+                item.Warnings.Add($"Sheet còn Namespace (cũ) '{LegacyNamespace}' nhưng ô A1 '{classFullName}' không có " +
+                                  "namespace nên class sinh ra ở global. Muốn namespace thì ghi vào A1 " +
+                                  $"(ví dụ {LegacyNamespace}.{classFullName}).");
+            }
+
             file.Items.Add(item);
 
             FeederChangeSet changeSet = new FeederChangeSet();
@@ -554,12 +588,20 @@ namespace Feeder
                 return;
             }
 
+            string classFullName = (SelectedClassCell ?? string.Empty).Trim();
+            if (classFullName.Length == 0)
+            {
+                infoBoxMessage = "No sheet is selected";
+                return;
+            }
+
             FeederDataAssetGenerator.GenerateClass(selectTab, cells, rawFields, AssetFolder, SpriteAssetFolder,
-                PrefabFolder, Namespace);
+                PrefabFolder, classFullName);
             RefreshGeneratedOutputReferences();
         }
 
-        private bool HasEnumTarget => !ScriptFolder.IsNullOrWhitespace() || EnumScript != null;
+        private bool HasEnumTarget => !ScriptFolder.IsNullOrWhitespace() ||
+                                      (EnumScripts != null && EnumScripts.Exists(x => x != null));
 
         private bool CanUpdateEnum => HasEnumTarget && !selectTab.IsNullOrWhitespace()
                                                     && cells != null && cells.GetLength(0) > 0
@@ -616,7 +658,7 @@ namespace Feeder
                     }
 
                     FeederDataAssetGenerator.GenerateClass(name, tabCells, tabRawFields, AssetFolder,
-                        SpriteAssetFolder, PrefabFolder, Namespace);
+                        SpriteAssetFolder, PrefabFolder, tabCells[0, 0].Trim());
                     updated++;
                 }
             }
@@ -863,11 +905,12 @@ namespace Feeder
                 return null;
             }
 
-            string className = cells[0, 0];
-            if (className.IsNullOrWhitespace())
+            if (cells[0, 0].IsNullOrWhitespace())
             {
                 return null;
             }
+
+            FeederEnumUtils.SplitFullName(cells[0, 0].Trim(), out string _, out string className);
 
             string scriptFolderPath = BuildAssetFolderPath(ScriptFolder);
             if (scriptFolderPath.IsNullOrWhitespace())

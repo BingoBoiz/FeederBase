@@ -62,8 +62,6 @@ namespace Feeder
 
         public string BlockIndent = string.Empty;
 
-        public string WrapNamespace;
-
         [NonSerialized] public Type ExistingType;
 
         public string UnderlyingTypeKeyword = "byte";

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using NabaGame.Core.Runtime.Extensions;
 using UnityEditor;
 using UnityEditor.Compilation;
@@ -19,7 +20,7 @@ namespace Feeder
     public static class FeederEnumUtils
     {
         private static List<Type> cachedEnumTypes;
-        private static List<string> cachedNamespaces;
+        private static HashSet<string> cachedTypeNames;
 
         public static List<Type> EnumTypes
         {
@@ -34,17 +35,14 @@ namespace Feeder
             }
         }
 
-        public static List<string> ProjectNamespaces
+        public static bool IsProjectTypeName(string fullName)
         {
-            get
+            if (cachedTypeNames == null)
             {
-                if (cachedNamespaces == null)
-                {
-                    GetEnums();
-                }
-
-                return cachedNamespaces;
+                GetEnums();
             }
+
+            return cachedTypeNames.Contains(fullName);
         }
 
         [InitializeOnLoadMethod]
@@ -57,13 +55,13 @@ namespace Feeder
         public static void InvalidateCache()
         {
             cachedEnumTypes = null;
-            cachedNamespaces = null;
+            cachedTypeNames = null;
         }
 
         public static void GetEnums()
         {
             cachedEnumTypes = new List<Type>();
-            HashSet<string> namespaceSet = new HashSet<string>(StringComparer.Ordinal);
+            cachedTypeNames = new HashSet<string>(StringComparer.Ordinal);
 
             HashSet<string> projectAssemblyNames = GetProjectAssemblyNames();
             System.Reflection.Assembly[] loaded = AppDomain.CurrentDomain.GetAssemblies();
@@ -82,20 +80,13 @@ namespace Feeder
                         continue;
                     }
 
+                    cachedTypeNames.Add(ToFullName(type));
                     if (type.IsEnum)
                     {
                         cachedEnumTypes.Add(type);
                     }
-
-                    if (!string.IsNullOrEmpty(type.Namespace))
-                    {
-                        namespaceSet.Add(type.Namespace);
-                    }
                 }
             }
-
-            cachedNamespaces = namespaceSet.ToList();
-            cachedNamespaces.Sort(StringComparer.Ordinal);
         }
 
         private static HashSet<string> GetProjectAssemblyNames()
@@ -163,38 +154,24 @@ namespace Feeder
             }
         }
 
-        public static bool ScopeMatches(Type type, string sheetNamespace)
-        {
-            if (type == null)
-            {
-                return false;
-            }
+        public static readonly Regex QualifiedIdentifier =
+            new Regex(@"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$");
 
-            return sheetNamespace.IsNullOrWhitespace()
-                ? string.IsNullOrEmpty(type.Namespace)
-                : string.Equals(type.Namespace, sheetNamespace.Trim(), StringComparison.Ordinal);
+        public static string ToFullName(Type type)
+        {
+            return type.FullName?.Replace('+', '.') ?? type.Name;
         }
 
-        public static string DescribeScope(string sheetNamespace)
+        public static void SplitFullName(string fullName, out string ns, out string shortName)
         {
-            return sheetNamespace.IsNullOrWhitespace()
-                ? "global scope (trường Namespace của sheet đang trống)"
-                : $"namespace '{sheetNamespace.Trim()}' (kể cả namespace cha và global)";
+            int dot = fullName.LastIndexOf('.');
+            ns = dot < 0 ? string.Empty : fullName.Substring(0, dot);
+            shortName = dot < 0 ? fullName : fullName.Substring(dot + 1);
         }
 
-        public static List<Type> FindEnumsOutsideScope(string shortName, string sheetNamespace)
-        {
-            if (shortName.IsNullOrWhitespace())
-            {
-                return new List<Type>();
-            }
-
-            string wanted = shortName.Trim();
-            return EnumTypes.Where(x => x.Name == wanted && !ScopeMatches(x, sheetNamespace)).ToList();
-        }
-
-        public static FeederEnumResolveStatus TryResolveEnumType(string token, string sheetNamespace,
-            out Type resolved, out List<Type> candidates)
+        // a header token is a full name: no dot means global scope, nothing is looked up implicitly
+        public static FeederEnumResolveStatus TryResolveEnumType(string token, out Type resolved,
+            out List<Type> candidates)
         {
             resolved = null;
             candidates = null;
@@ -204,98 +181,46 @@ namespace Feeder
             }
 
             string wanted = token.Trim();
-            List<Type> all = EnumTypes;
-
-            if (wanted.IndexOf('.') >= 0)
+            List<Type> matches = EnumTypes.Where(x => ToFullName(x) == wanted).ToList();
+            if (matches.Count == 0 && wanted.IndexOf('.') >= 0)
             {
                 Type direct = Type.GetType(wanted, false);
                 if (direct != null && direct.IsEnum)
                 {
-                    resolved = direct;
-                    return FeederEnumResolveStatus.Resolved;
+                    matches.Add(direct);
                 }
-
-                for (int i = 0; i < all.Count; i++)
-                {
-                    string fullName = all[i].FullName;
-                    if (fullName == null)
-                    {
-                        continue;
-                    }
-
-                    if (fullName == wanted || fullName.Replace('+', '.') == wanted)
-                    {
-                        resolved = all[i];
-                        return FeederEnumResolveStatus.Resolved;
-                    }
-                }
-
-                return FeederEnumResolveStatus.NotFound;
             }
 
-            // same lookup as C#: the sheet namespace, then each parent namespace, then global
-            string scope = sheetNamespace.IsNullOrWhitespace() ? string.Empty : sheetNamespace.Trim();
-            List<Type> inScope = all.Where(x => x.Name == wanted && ScopeMatches(x, scope)).ToList();
-            while (inScope.Count == 0 && scope.Length > 0)
-            {
-                int dot = scope.LastIndexOf('.');
-                scope = dot < 0 ? string.Empty : scope.Substring(0, dot);
-                inScope = all.Where(x => x.Name == wanted && ScopeMatches(x, scope)).ToList();
-            }
-
-            if (inScope.Count == 0)
+            if (matches.Count == 0)
             {
                 return FeederEnumResolveStatus.NotFound;
             }
 
-            if (inScope.Count == 1)
+            if (matches.Count == 1)
             {
-                resolved = inScope[0];
+                resolved = matches[0];
                 return FeederEnumResolveStatus.Resolved;
             }
 
-            List<Type> topLevel = inScope.Where(x => !x.IsNested).ToList();
-            if (topLevel.Count == 1)
-            {
-                resolved = topLevel[0];
-                return FeederEnumResolveStatus.Resolved;
-            }
-
-            candidates = inScope;
+            candidates = matches;
             return FeederEnumResolveStatus.Ambiguous;
         }
 
-        public static FeederEnumResolveStatus TryResolveEnumType(string token, out Type resolved,
-            out List<Type> candidates)
+        public static List<Type> FindEnumsWithSameShortName(string token)
         {
-            return TryResolveEnumType(token, string.Empty, out resolved, out candidates);
-        }
-
-        public static Type GetEnumTypeByName(string enumName, string sheetNamespace)
-        {
-            if (TryResolveEnumType(enumName, sheetNamespace, out Type exact, out List<Type> _) ==
-                FeederEnumResolveStatus.Resolved)
+            if (token.IsNullOrWhitespace())
             {
-                return exact;
+                return new List<Type>();
             }
 
-            List<Type> loose = EnumTypes
-                .Where(x => x.FullName != null && x.FullName.Contains(enumName) && ScopeMatches(x, sheetNamespace))
-                .ToList();
-            if (loose.Count != 1)
-            {
-                return null;
-            }
-
-            Debug.LogWarning(
-                $"[Feeder] Enum '{enumName}' chỉ khớp kiểu chuỗi con → '{loose[0].FullName}'. " +
-                "Nên ghi tên đầy đủ trong header sheet để tránh khớp nhầm.");
-            return loose[0];
+            string wanted = token.Trim();
+            SplitFullName(wanted, out string _, out string shortName);
+            return EnumTypes.Where(x => x.Name == shortName && ToFullName(x) != wanted).ToList();
         }
 
-        public static Type GetEnumTypeByName(string enumName)
+        public static string DescribeTypes(List<Type> types)
         {
-            return GetEnumTypeByName(enumName, string.Empty);
+            return string.Join(", ", types.ConvertAll(x => $"{ToFullName(x)} ({x.Assembly.GetName().Name})").ToArray());
         }
     }
 }

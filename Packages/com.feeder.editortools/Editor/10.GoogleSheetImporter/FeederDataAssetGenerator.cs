@@ -13,20 +13,21 @@ namespace Feeder
     public static class FeederDataAssetGenerator
     {
         public static void GenerateClass(string sheetName, string[,] cells, List<string> rawFields,
-            string assetFolderPath, string spriteAssetFolderPath, string prefabFolderPath, string sheetNamespace)
+            string assetFolderPath, string spriteAssetFolderPath, string prefabFolderPath, string classFullName)
         {
             sheetName = sheetName.Replace(" ", "");
-            string typeName = cells[0, 0];
+            string typeName = classFullName;
+            FeederEnumUtils.SplitFullName(typeName, out string _, out string shortName);
             string fileName = "Raw" + sheetName;
             string dataClassName = typeName + "Data";
-            Type assetType = GetTypeByName(dataClassName, sheetNamespace);
+            Type assetType = FindTypeByFullName(dataClassName);
             string path = $"Assets/{assetFolderPath}";
 
             if (assetType == null)
             {
                 EditorUtility.DisplayDialog("Error",
                     $"Cannot find the script {dataClassName}, please generate the script first.\n" +
-                    "Nếu vừa đổi Namespace của sheet thì phải bấm Generate Script rồi đợi compile xong.",
+                    "Nếu vừa đổi ô A1 (tên class hoặc namespace) thì phải bấm Generate Script rồi đợi compile xong.",
                     "close");
                 return;
             }
@@ -38,11 +39,18 @@ namespace Feeder
                 AssetDatabase.CreateAsset(dataHolder, path + $"/{fileName}.asset");
             }
 
-            string listFieldName = $"{typeName[0].ToString().ToLower()}{typeName.Substring(1)}s";
+            string listFieldName = $"{shortName[0].ToString().ToLower()}{shortName.Substring(1)}s";
             FieldInfo dataListField = assetType.GetField(listFieldName);
             object dataList = dataListField.GetValue(dataHolder);
 
-            Type dataType = GetTypeByName(typeName, sheetNamespace);
+            Type dataType = FindTypeByFullName(typeName);
+            if (dataType == null)
+            {
+                EditorUtility.DisplayDialog("Generate Asset",
+                    $"Cannot find the class {typeName}, please generate the script first.", "close");
+                return;
+            }
+
             FieldInfo[] fields = dataType.GetFields();
             if (fields == null || fields.Length <= 0)
             {
@@ -574,47 +582,45 @@ namespace Feeder
             return normalizedFolderPath;
         }
 
-        public static Type GetTypeByName(string name, string sheetNamespace)
+        public static Type FindTypeByFullName(string fullName)
         {
-            string wanted = string.IsNullOrEmpty(sheetNamespace) || sheetNamespace.Trim().Length == 0
-                ? name
-                : $"{sheetNamespace.Trim()}.{name}";
-
-            Type loose = null;
             foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
             {
                 foreach (Type type in GetAssemblyTypes(assembly))
                 {
-                    if (type == null)
-                    {
-                        continue;
-                    }
-
-                    if (type.FullName == wanted)
+                    if (type != null && FeederEnumUtils.ToFullName(type) == fullName)
                     {
                         return type;
-                    }
-
-                    if (loose == null && type.Name == name)
-                    {
-                        loose = type;
                     }
                 }
             }
 
-            if (loose != null && loose.FullName != wanted)
-            {
-                Debug.LogWarning(
-                    $"[Feeder] Không có '{wanted}', dùng tạm '{loose.FullName}' vì trùng tên ngắn. " +
-                    "Đặt Namespace của sheet cho khớp rồi Generate Script lại nếu đây không phải class mong muốn.");
-            }
-
-            return loose;
+            return null;
         }
 
         public static Type GetTypeByName(string name)
         {
-            return GetTypeByName(name, null);
+            Type exact = FindTypeByFullName(name);
+            if (exact != null)
+            {
+                return exact;
+            }
+
+            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                foreach (Type type in GetAssemblyTypes(assembly))
+                {
+                    if (type != null && type.Name == name)
+                    {
+                        Debug.LogWarning(
+                            $"[Feeder] Không có type '{name}', dùng tạm '{type.FullName}' vì trùng tên ngắn. " +
+                            "Ghi tên đầy đủ trong header nếu đây không phải type mong muốn.");
+                        return type;
+                    }
+                }
+            }
+
+            return null;
         }
 
         private static IEnumerable<Type> GetAssemblyTypes(Assembly assembly)

@@ -13,8 +13,16 @@ namespace Feeder
 
         private const string NoneMemberName = "None";
 
+        private sealed class EnumScriptSource
+        {
+            public string AssetPath;
+            public string Text;
+            public string Masked;
+            public bool HadBom;
+        }
+
         public static FeederEnumUpdatePlan BuildPlan(IList<FeederEnumColumnScan> scans, string scriptFolderAssetPath,
-            string sheetTypeName, string enumScriptAssetPath = null, string sheetNamespace = null)
+            string sheetTypeName, IList<string> enumScriptAssetPaths)
         {
             FeederEnumUpdatePlan plan = new FeederEnumUpdatePlan { SheetTypeName = sheetTypeName };
             if (scans == null || scans.Count == 0)
@@ -38,41 +46,88 @@ namespace Feeder
                 list.Add(scans[i]);
             }
 
+            List<EnumScriptSource> scripts = LoadEnumScripts(plan, enumScriptAssetPaths);
             Dictionary<string, FeederEnumFileChange> filesByPath =
                 new Dictionary<string, FeederEnumFileChange>(StringComparer.OrdinalIgnoreCase);
 
             for (int i = 0; i < tokenOrder.Count; i++)
             {
                 string token = tokenOrder[i];
-                BuildChangeForToken(plan, filesByPath, token, byToken[token], scriptFolderAssetPath,
-                    enumScriptAssetPath, sheetNamespace);
+                BuildChangeForToken(plan, filesByPath, token, byToken[token], scriptFolderAssetPath, scripts);
             }
 
             return plan;
         }
 
+        private static List<EnumScriptSource> LoadEnumScripts(FeederEnumUpdatePlan plan, IList<string> assetPaths)
+        {
+            List<EnumScriptSource> scripts = new List<EnumScriptSource>();
+            if (assetPaths == null)
+            {
+                return scripts;
+            }
+
+            for (int i = 0; i < assetPaths.Count; i++)
+            {
+                if (assetPaths[i].IsNullOrWhitespace())
+                {
+                    continue;
+                }
+
+                string path = assetPaths[i].Replace('\\', '/');
+                if (scripts.Exists(x => string.Equals(x.AssetPath, path, StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+
+                string text = FeederEnumSourceEditor.TryReadText(path, out bool hadBom);
+                if (text == null)
+                {
+                    plan.Issues.Add($"Không đọc được Enum Script {path}.");
+                    continue;
+                }
+
+                scripts.Add(new EnumScriptSource
+                {
+                    AssetPath = path,
+                    Text = text,
+                    Masked = FeederEnumSourceEditor.MaskCommentsAndStrings(text),
+                    HadBom = hadBom,
+                });
+            }
+
+            return scripts;
+        }
+
+        // enums are read from anywhere, but written only into the sheet's Enum Scripts or files directly in its Script Folder
+        private static bool IsWritable(string assetPath, string scriptFolderAssetPath, List<EnumScriptSource> scripts)
+        {
+            string path = assetPath.Replace('\\', '/');
+            if (scripts.Exists(x => string.Equals(x.AssetPath, path, StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+
+            string folder = Path.GetDirectoryName(path)?.Replace('\\', '/');
+            return !scriptFolderAssetPath.IsNullOrWhitespace() &&
+                   string.Equals(folder, scriptFolderAssetPath.TrimEnd('/'), StringComparison.OrdinalIgnoreCase);
+        }
+
         private static void BuildChangeForToken(FeederEnumUpdatePlan plan,
             Dictionary<string, FeederEnumFileChange> filesByPath,
             string token, List<FeederEnumColumnScan> columns, string scriptFolderAssetPath,
-            string enumScriptAssetPath, string sheetNamespace)
+            List<EnumScriptSource> scripts)
         {
             MergeValues(columns, out List<FeederEnumSheetValue> values, out List<string> tabs);
 
-            FeederEnumResolveStatus status = FeederEnumUtils.TryResolveEnumType(token, sheetNamespace,
+            FeederEnumResolveStatus status = FeederEnumUtils.TryResolveEnumType(token,
                 out Type existing, out List<Type> candidates);
 
             if (status == FeederEnumResolveStatus.Ambiguous)
             {
-                List<string> names = new List<string>();
-                for (int i = 0; i < candidates.Count; i++)
-                {
-                    names.Add(candidates[i].FullName);
-                }
-
                 plan.Issues.Add(
-                    $"'{token}' trùng tên ở nhiều nơi ({string.Join(", ", names)}). " +
-                    "Ghi tên đầy đủ trong header sheet (ví dụ s_Field:Yolo.testEnum.TreeType), " +
-                    "hoặc đặt Namespace của sheet cho đúng.");
+                    $"'{token}' được khai báo trùng tên đầy đủ ở nhiều assembly " +
+                    $"({FeederEnumUtils.DescribeTypes(candidates)}) — tool không biết ghi vào cái nào.");
                 return;
             }
 
@@ -85,140 +140,164 @@ namespace Feeder
 
             if (status == FeederEnumResolveStatus.NotFound)
             {
-                List<Type> elsewhere = FeederEnumUtils.FindEnumsOutsideScope(token, sheetNamespace);
-                if (elsewhere.Count > 0)
-                {
-                    List<string> names = new List<string>();
-                    for (int i = 0; i < elsewhere.Count; i++)
-                    {
-                        names.Add(elsewhere[i].FullName?.Replace('+', '.'));
-                    }
-
-                    plan.Issues.Add(
-                        $"'{token}' không có ở {FeederEnumUtils.DescribeScope(sheetNamespace)} nhưng có ở: " +
-                        $"{string.Join(", ", names)}. Apply sẽ TẠO MỚI một enum '{token}' thứ hai và KHÔNG " +
-                        $"đụng tới cái đang có. Muốn dùng lại cái có sẵn: đặt Namespace của sheet = " +
-                        $"'{elsewhere[0].Namespace ?? string.Empty}', hoặc ghi tên đầy đủ trong header " +
-                        $"(ví dụ s_Field:{names[0]}).");
-                }
-
-                BuildNewEnumChange(plan, filesByPath, change, token, values, scriptFolderAssetPath,
-                    enumScriptAssetPath, sheetNamespace);
+                BuildNewEnumChange(plan, filesByPath, change, token.Trim(), values, scriptFolderAssetPath, scripts);
                 return;
             }
 
-            BuildExistingEnumChange(plan, filesByPath, change, existing, values, enumScriptAssetPath);
+            BuildExistingEnumChange(plan, filesByPath, change, existing, values, scriptFolderAssetPath, scripts);
         }
 
         private static void BuildNewEnumChange(FeederEnumUpdatePlan plan,
             Dictionary<string, FeederEnumFileChange> filesByPath, FeederEnumChange change, string token,
-            List<FeederEnumSheetValue> values, string scriptFolderAssetPath, string enumScriptAssetPath,
-            string sheetNamespace)
+            List<FeederEnumSheetValue> values, string scriptFolderAssetPath, List<EnumScriptSource> scripts)
         {
-            if (token.IndexOf('.') >= 0)
+            if (!FeederEnumUtils.QualifiedIdentifier.IsMatch(token))
             {
-                plan.Issues.Add($"'{token}' không tồn tại và có dấu '.' — tool chỉ tạo mới enum tên đơn giản.");
+                plan.Issues.Add($"'{token}' không phải tên enum hợp lệ (TenEnum hoặc Namespace.TenEnum).");
                 return;
             }
 
-            bool useEnumScript = !enumScriptAssetPath.IsNullOrWhitespace();
-            if (!useEnumScript && scriptFolderAssetPath.IsNullOrWhitespace())
+            FeederEnumUtils.SplitFullName(token, out string ns, out string shortName);
+            List<Type> sameShortName = FeederEnumUtils.FindEnumsWithSameShortName(token);
+            if (ns.Length == 0 && sameShortName.Count > 0)
             {
                 plan.Issues.Add(
-                    $"Không tạo được enum '{token}': cả Enum Script lẫn Script Folder đều đang trống.");
+                    $"Chưa có enum global '{token}', nhưng đã có {FeederEnumUtils.DescribeTypes(sameShortName)}. " +
+                    "Header không có dấu '.' nghĩa là enum global — muốn dùng enum trên thì ghi đủ tên, ví dụ " +
+                    $"s_Field:{FeederEnumUtils.ToFullName(sameShortName[0])}. Tool không tự tạo enum global trùng tên ngắn.");
                 return;
             }
 
-            string ns = sheetNamespace.IsNullOrWhitespace() ? string.Empty : sheetNamespace.Trim();
+            if (ns.Length > 0 && FeederEnumUtils.IsProjectTypeName(ns))
+            {
+                plan.Issues.Add($"Không tạo được enum '{token}': '{ns}' là một type, tool không tạo enum lồng trong class.");
+                return;
+            }
 
-            change.EnumName = token;
-            change.EnumFullName = ns.Length == 0 ? token : $"{ns}.{token}";
+            change.EnumName = shortName;
+            change.EnumFullName = token;
             change.IsNew = true;
             change.InsertNoneZero = true;
             change.UnderlyingTypeKeyword =
                 CountWritable(values) + 1 <= ByteMemberThreshold ? "byte" : "int";
 
-            string assetPath = useEnumScript
-                ? enumScriptAssetPath
-                : $"{scriptFolderAssetPath.TrimEnd('/')}/{token}.cs";
-
-            string existingText = null;
-            bool hadBom = false;
-            if (useEnumScript)
+            if (sameShortName.Count > 0)
             {
-                existingText = FeederEnumSourceEditor.TryReadText(assetPath, out hadBom);
+                change.Warnings.Add(
+                    $"Đã có enum cùng tên ngắn ({FeederEnumUtils.DescribeTypes(sameShortName)}): trong code thuộc " +
+                    $"namespace {ns}, '{shortName}' sẽ trỏ tới enum mới này.");
             }
-            else if (File.Exists(Path.GetFullPath(assetPath)))
+
+            if (scripts.Count == 0)
+            {
+                BuildNewEnumFile(plan, filesByPath, change, ns, values, scriptFolderAssetPath);
+                return;
+            }
+
+            for (int i = 0; i < scripts.Count; i++)
+            {
+                if (FeederEnumSourceEditor.ContainsEnumDeclaration(scripts[i].Masked, shortName, ns))
+                {
+                    plan.Issues.Add(
+                        $"'{token}' đã được khai báo trong {scripts[i].AssetPath} nhưng type chưa load " +
+                        "(file đang lỗi compile hoặc chưa compile xong) — không tạo khai báo thứ hai.");
+                    return;
+                }
+            }
+
+            List<string> skipped = new List<string>();
+            for (int i = 0; i < scripts.Count; i++)
+            {
+                EnumScriptSource script = scripts[i];
+                if (!TryFindNewEnumSlot(script, ns, out int offset, out string indent, out bool bodyEmpty,
+                        out string reason))
+                {
+                    if (reason != null)
+                    {
+                        skipped.Add($"{script.AssetPath}: {reason}");
+                    }
+
+                    continue;
+                }
+
+                AssignNewEnumMembers(change, values);
+                change.InsertOffset = offset;
+                change.BlockIndent = indent;
+                change.BodyIsEmpty = bodyEmpty;
+                change.DeclareInExistingFile = true;
+                GetOrAddFile(plan, filesByPath, script.AssetPath, script.Text, script.HadBom).Enums.Add(change);
+                return;
+            }
+
+            string scope = ns.Length == 0
+                ? "global (file không khai báo namespace nào)"
+                : $"có khối 'namespace {ns} {{ }}'";
+            plan.Issues.Add(
+                $"Không tạo được enum '{token}': không có Enum Script nào {scope}. Thêm một file như vậy " +
+                "vào Enum Scripts của sheet." +
+                (skipped.Count > 0 ? $" Đã bỏ qua: {string.Join(" | ", skipped.ToArray())}" : string.Empty));
+        }
+
+        private static bool TryFindNewEnumSlot(EnumScriptSource script, string ns, out int offset,
+            out string indent, out bool bodyEmpty, out string reason)
+        {
+            offset = 0;
+            indent = string.Empty;
+            bodyEmpty = false;
+            reason = null;
+
+            if (ns.Length == 0)
+            {
+                if (FeederEnumSourceEditor.DeclaresNamespace(script.Masked))
+                {
+                    return false;
+                }
+
+                offset = FeederEnumSourceEditor.ComputeAppendOffset(script.Text);
+            }
+            else if (!FeederEnumSourceEditor.TryFindNamespaceBlock(script.Text, script.Masked, ns,
+                         out offset, out indent, out bodyEmpty, out reason))
+            {
+                return false;
+            }
+
+            if (FeederEnumSourceEditor.IsInsideConditionalBlock(script.Masked, offset))
+            {
+                reason = "chỗ chèn nằm trong khối #if";
+                return false;
+            }
+
+            return true;
+        }
+
+        private static void BuildNewEnumFile(FeederEnumUpdatePlan plan,
+            Dictionary<string, FeederEnumFileChange> filesByPath, FeederEnumChange change, string ns,
+            List<FeederEnumSheetValue> values, string scriptFolderAssetPath)
+        {
+            if (scriptFolderAssetPath.IsNullOrWhitespace())
+            {
+                plan.Issues.Add(
+                    $"Không tạo được enum '{change.EnumFullName}': Enum Scripts lẫn Script Folder đều đang trống.");
+                return;
+            }
+
+            string assetPath = $"{scriptFolderAssetPath.TrimEnd('/')}/{change.EnumName}.cs";
+            if (filesByPath.TryGetValue(assetPath, out FeederEnumFileChange file) && file.Namespace != ns)
+            {
+                plan.Issues.Add(
+                    $"Không tạo được enum '{change.EnumFullName}': {assetPath} đã dành cho một enum cùng tên " +
+                    "ở namespace khác.");
+                return;
+            }
+
+            if (File.Exists(Path.GetFullPath(assetPath)))
             {
                 change.BlockedReason = $"File {assetPath} đã tồn tại nhưng type chưa load (có thể đang lỗi compile).";
             }
 
             AssignNewEnumMembers(change, values);
 
-            if (useEnumScript && existingText != null)
-            {
-                string masked = FeederEnumSourceEditor.MaskCommentsAndStrings(existingText);
-                if (!change.IsBlocked && FeederEnumSourceEditor.ContainsEnumDeclaration(masked, token))
-                {
-                    change.BlockedReason =
-                        $"'{token}' đã được khai báo trong {assetPath} nhưng type chưa load " +
-                        "(có thể file đang lỗi compile) — không nối thêm khai báo trùng tên.";
-                }
-
-                bool foundBlock = FeederEnumSourceEditor.TryFindNamespaceBlock(existingText, masked, ns,
-                    out int nsOffset, out string nsIndent, out bool nsEmpty, out string nsError);
-
-                if (nsError != null && !change.IsBlocked)
-                {
-                    change.BlockedReason = $"{assetPath}: {nsError}";
-                }
-
-                if (foundBlock)
-                {
-                    change.InsertOffset = nsOffset;
-                    change.BlockIndent = nsIndent;
-                    change.BodyIsEmpty = nsEmpty;
-                }
-                else
-                {
-                    change.InsertOffset = FeederEnumSourceEditor.ComputeAppendOffset(existingText);
-
-                    if (ns.Length > 0)
-                    {
-                        change.WrapNamespace = ns;
-                        change.Warnings.Add(
-                            $"{assetPath} chưa có khối 'namespace {ns}' — enum mới được thêm vào một khối " +
-                            $"'namespace {ns}' mới ở cuối file.");
-                    }
-                    else if (FeederEnumSourceEditor.DeclaresNamespace(masked))
-                    {
-                        change.Warnings.Add(
-                            $"{assetPath} có namespace nhưng sheet đang để trống Namespace — enum mới nằm ở " +
-                            "global scope (cuối file). Muốn nó nằm cùng namespace với code còn lại thì đặt " +
-                            "trường Namespace của sheet.");
-                    }
-                }
-
-                if (!filesByPath.TryGetValue(assetPath, out FeederEnumFileChange target))
-                {
-                    target = new FeederEnumFileChange
-                    {
-                        AssetPath = assetPath,
-                        IsNewFile = false,
-                        OriginalText = existingText,
-                        OriginalHadBom = hadBom,
-                        Newline = FeederEnumSourceEditor.DetectNewline(existingText),
-                    };
-                    filesByPath.Add(assetPath, target);
-                    plan.Files.Add(target);
-                }
-
-                change.DeclareInExistingFile = true;
-                target.Enums.Add(change);
-                return;
-            }
-
-            if (!filesByPath.TryGetValue(assetPath, out FeederEnumFileChange file))
+            if (file == null)
             {
                 file = new FeederEnumFileChange
                 {
@@ -234,6 +313,27 @@ namespace Feeder
             }
 
             file.Enums.Add(change);
+        }
+
+        private static FeederEnumFileChange GetOrAddFile(FeederEnumUpdatePlan plan,
+            Dictionary<string, FeederEnumFileChange> filesByPath, string assetPath, string text, bool hadBom)
+        {
+            if (filesByPath.TryGetValue(assetPath, out FeederEnumFileChange file))
+            {
+                return file;
+            }
+
+            file = new FeederEnumFileChange
+            {
+                AssetPath = assetPath,
+                IsNewFile = false,
+                OriginalText = text,
+                OriginalHadBom = hadBom,
+                Newline = FeederEnumSourceEditor.DetectNewline(text),
+            };
+            filesByPath.Add(assetPath, file);
+            plan.Files.Add(file);
+            return file;
         }
 
         public static void AssignNewEnumMembers(FeederEnumChange change, List<FeederEnumSheetValue> values)
@@ -322,7 +422,7 @@ namespace Feeder
 
         private static void BuildExistingEnumChange(FeederEnumUpdatePlan plan,
             Dictionary<string, FeederEnumFileChange> filesByPath, FeederEnumChange change, Type existing,
-            List<FeederEnumSheetValue> values, string enumScriptAssetPath)
+            List<FeederEnumSheetValue> values, string scriptFolderAssetPath, List<EnumScriptSource> scripts)
         {
             change.EnumName = existing.Name;
             change.EnumFullName = existing.FullName;
@@ -361,12 +461,27 @@ namespace Feeder
                 return;
             }
 
-            if (!enumScriptAssetPath.IsNullOrWhitespace() &&
-                !string.Equals(location.AssetPath, enumScriptAssetPath, StringComparison.OrdinalIgnoreCase))
+            if (!IsWritable(location.AssetPath, scriptFolderAssetPath, scripts))
             {
-                change.Warnings.Add(
-                    $"enum {existing.Name} đang nằm ở {location.AssetPath}, không phải Enum Script đã chỉ định " +
-                    $"({enumScriptAssetPath}) — member mới vẫn được thêm tại chỗ.");
+                List<string> missing = new List<string>();
+                for (int i = 0; i < values.Count; i++)
+                {
+                    if (values[i].IsWritable && !existingNames.Contains(values[i].RawValue))
+                    {
+                        missing.Add(values[i].RawValue);
+                    }
+                }
+
+                if (missing.Count > 0)
+                {
+                    plan.Issues.Add(
+                        $"enum {FeederEnumUtils.ToFullName(existing)} ({location.AssetPath}) chưa có {missing.Count} " +
+                        $"giá trị từ sheet: {string.Join(", ", missing.ToArray())}. File này không nằm trong Enum " +
+                        "Scripts của sheet nên tool không ghi — thêm file vào Enum Scripts nếu sheet này được phép " +
+                        "sửa enum đó.");
+                }
+
+                return;
             }
 
             FeederEnumSourceEditor.GetNumbering(existing, out decimal next, out decimal ceiling, out string keyword);
@@ -426,21 +541,7 @@ namespace Feeder
                 return;
             }
 
-            if (!filesByPath.TryGetValue(location.AssetPath, out FeederEnumFileChange file))
-            {
-                file = new FeederEnumFileChange
-                {
-                    AssetPath = location.AssetPath,
-                    IsNewFile = false,
-                    OriginalText = location.Text,
-                    OriginalHadBom = location.HadBom,
-                    Newline = location.Newline,
-                };
-                filesByPath.Add(location.AssetPath, file);
-                plan.Files.Add(file);
-            }
-
-            file.Enums.Add(change);
+            GetOrAddFile(plan, filesByPath, location.AssetPath, location.Text, location.HadBom).Enums.Add(change);
         }
 
         // giữ nguyên thứ tự quét (tab rồi tới dòng), giá trị lỗi nằm chung danh sách để comment ra đúng chỗ

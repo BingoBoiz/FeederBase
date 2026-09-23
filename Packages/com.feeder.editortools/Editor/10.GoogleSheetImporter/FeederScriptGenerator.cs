@@ -58,10 +58,9 @@ public class {0}Data : ScriptableObject
         /// </summary>
         public const string FallbackCommentMarker = "-> generated as";
 
-        public static void GenerateClass(string className, List<string> rawFields, string scriptPath,
-            string sheetNamespace)
+        public static void GenerateClass(string classFullName, List<string> rawFields, string scriptPath)
         {
-            string classData = BuildScriptText(className, rawFields, sheetNamespace, out List<string> skippedColumns);
+            string classData = BuildScriptText(classFullName, rawFields, out List<string> skippedColumns);
             if (classData == null)
             {
                 EditorUtility.DisplayDialog("Generate Script",
@@ -81,29 +80,40 @@ public class {0}Data : ScriptableObject
                 }
             }
 
+            FeederEnumUtils.SplitFullName(classFullName.Trim(), out string _, out string className);
             WriteScript($"{scriptPath}/{className}Data.cs", classData);
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
-            Debug.Log($"Success !! {className} scripts is generated !!");
+            Debug.Log($"Success !! {classFullName} scripts is generated !!");
         }
 
-        public static string BuildScriptText(string className, List<string> rawFields, string sheetNamespace,
+        public static string BuildScriptText(string classFullName, List<string> rawFields,
             out List<string> skippedColumns)
         {
-            return BuildScriptText(className, rawFields, sheetNamespace, out skippedColumns,
-                out List<FeederFieldFallback> _);
+            return BuildScriptText(classFullName, rawFields, out skippedColumns, out List<FeederFieldFallback> _);
         }
 
-        public static string BuildScriptText(string className, List<string> rawFields, string sheetNamespace,
+        // A1 holds the class full name: "RawItem" is global, "MyGame.RawItem" is generated inside namespace MyGame
+        public static string BuildScriptText(string classFullName, List<string> rawFields,
             out List<string> skippedColumns, out List<FeederFieldFallback> fallbacks)
         {
             skippedColumns = new List<string>();
             fallbacks = new List<FeederFieldFallback>();
-            if (className.IsNullOrWhitespace())
+            if (classFullName.IsNullOrWhitespace())
             {
                 skippedColumns.Add("  • Tên class (ô đầu tiên của hàng 1 trong sheet) đang trống");
                 return null;
             }
+
+            classFullName = classFullName.Trim();
+            if (!FeederEnumUtils.QualifiedIdentifier.IsMatch(classFullName))
+            {
+                skippedColumns.Add($"  • Tên class '{classFullName}' ở ô A1 không hợp lệ (TenClass hoặc Namespace.TenClass)");
+                return null;
+            }
+
+            FeederEnumUtils.SplitFullName(classFullName, out string classNamespace, out string className);
+            bool qualifyTypes = classNamespace.Length > 0;
 
             if (rawFields == null || rawFields.Count == 0)
             {
@@ -142,17 +152,16 @@ public class {0}Data : ScriptableObject
                         if (typeTag == "s")
                         {
                             FeederEnumResolveStatus status = FeederEnumUtils.TryResolveEnumType(
-                                typeToken, sheetNamespace, out Type enumType, out List<Type> ambiguous);
+                                typeToken, out Type enumType, out List<Type> ambiguous);
 
                             if (status == FeederEnumResolveStatus.Resolved)
                             {
                                 resolvedTypeName = true;
-                                fieldType = ToCSharpTypeName(enumType);
+                                fieldType = ToCSharpTypeName(enumType, qualifyTypes);
                             }
                             else
                             {
-                                fallback = BuildEnumFallback(i, rawField, fieldName, typeToken, sheetNamespace,
-                                    status, ambiguous);
+                                fallback = BuildEnumFallback(i, rawField, fieldName, typeToken, status, ambiguous);
                             }
                         }
                         else if (typeTag == "pref")
@@ -166,7 +175,7 @@ public class {0}Data : ScriptableObject
                             else
                             {
                                 resolvedTypeName = true;
-                                fieldType = ToCSharpTypeName(componentType);
+                                fieldType = ToCSharpTypeName(componentType, qualifyTypes);
                             }
                         }
                         else
@@ -206,48 +215,38 @@ public class {0}Data : ScriptableObject
                 .Replace("{1}", fieldBuilder.ToString())
                 .Replace("{2}", listField) + Environment.NewLine;
 
-            return sheetNamespace.IsNullOrWhitespace()
-                ? generated
-                : WrapInNamespace(generated, sheetNamespace.Trim());
+            return qualifyTypes ? WrapInNamespace(generated, classNamespace) : generated;
         }
 
-        private static string ToCSharpTypeName(Type type)
+        // inside a namespace a short name can bind to a same-named type of that namespace, so qualify from global
+        private static string ToCSharpTypeName(Type type, bool qualify)
         {
-            return type.FullName?.Replace('+', '.') ?? type.Name;
+            string fullName = FeederEnumUtils.ToFullName(type);
+            return qualify ? "global::" + fullName : fullName;
         }
 
         private static FeederFieldFallback BuildEnumFallback(int columnIndex, string rawField, string fieldName,
-            string typeToken, string sheetNamespace, FeederEnumResolveStatus status, List<Type> ambiguous)
+            string typeToken, FeederEnumResolveStatus status, List<Type> ambiguous)
         {
             string head = $"  • Cột {columnIndex + 1} '{rawField}': ";
-            string scope = FeederEnumUtils.DescribeScope(sheetNamespace);
             string note;
             string hint;
 
             if (status == FeederEnumResolveStatus.Ambiguous)
             {
-                List<string> names = ambiguous.ConvertAll(x => x.FullName?.Replace('+', '.'));
                 note = $"enum '{typeToken}' is ambiguous";
-                hint = head + $"'{typeToken}' trùng tên ở nhiều nơi ({string.Join(", ", names)}) → tạm sinh ra string. " +
-                       "Ghi tên đầy đủ trong header sheet.";
+                hint = head + $"'{typeToken}' được khai báo ở nhiều assembly ({FeederEnumUtils.DescribeTypes(ambiguous)}) " +
+                       "→ tạm sinh ra string.";
             }
             else
             {
-                List<Type> elsewhere = FeederEnumUtils.FindEnumsOutsideScope(typeToken, sheetNamespace);
-                if (elsewhere.Count > 0)
-                {
-                    List<string> names = elsewhere.ConvertAll(x => x.FullName?.Replace('+', '.'));
-                    note = $"enum '{typeToken}' does not exist here";
-                    hint = head + $"không tìm thấy enum '{typeToken}' ở {scope} → tạm sinh ra string. " +
-                           $"Nó đang nằm ở: {string.Join(", ", names)} — đặt Namespace của sheet cho khớp, " +
-                           $"hoặc ghi tên đầy đủ trong header (ví dụ {rawField.Replace(typeToken, names[0])}).";
-                }
-                else
-                {
-                    note = $"enum '{typeToken}' does not exist";
-                    hint = head + $"không tìm thấy enum '{typeToken}' ở {scope} → tạm sinh ra string. " +
-                           "Bấm Update Enum trước để tạo nó.";
-                }
+                note = $"enum '{typeToken}' does not exist";
+                List<Type> sameShortName = FeederEnumUtils.FindEnumsWithSameShortName(typeToken);
+                hint = sameShortName.Count > 0
+                    ? head + $"không có enum '{typeToken}' (header không có '.' là enum global) → tạm sinh ra string. " +
+                      $"Đang có: {FeederEnumUtils.DescribeTypes(sameShortName)} — ghi đủ tên trong header, ví dụ " +
+                      $"{rawField.Replace(typeToken, FeederEnumUtils.ToFullName(sameShortName[0]))}."
+                    : head + $"không có enum '{typeToken}' → tạm sinh ra string. Bấm Update Enum trước để tạo nó.";
             }
 
             return new FeederFieldFallback
