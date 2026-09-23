@@ -179,7 +179,7 @@ namespace Feeder
         {
             return sheetNamespace.IsNullOrWhitespace()
                 ? "global scope (trường Namespace của sheet đang trống)"
-                : $"namespace '{sheetNamespace.Trim()}'";
+                : $"namespace '{sheetNamespace.Trim()}' (kể cả namespace cha và global)";
         }
 
         public static List<Type> FindEnumsOutsideScope(string shortName, string sheetNamespace)
@@ -233,7 +233,16 @@ namespace Feeder
                 return FeederEnumResolveStatus.NotFound;
             }
 
-            List<Type> inScope = all.Where(x => x.Name == wanted && ScopeMatches(x, sheetNamespace)).ToList();
+            // same lookup as C#: the sheet namespace, then each parent namespace, then global
+            string scope = sheetNamespace.IsNullOrWhitespace() ? string.Empty : sheetNamespace.Trim();
+            List<Type> inScope = all.Where(x => x.Name == wanted && ScopeMatches(x, scope)).ToList();
+            while (inScope.Count == 0 && scope.Length > 0)
+            {
+                int dot = scope.LastIndexOf('.');
+                scope = dot < 0 ? string.Empty : scope.Substring(0, dot);
+                inScope = all.Where(x => x.Name == wanted && ScopeMatches(x, scope)).ToList();
+            }
+
             if (inScope.Count == 0)
             {
                 return FeederEnumResolveStatus.NotFound;

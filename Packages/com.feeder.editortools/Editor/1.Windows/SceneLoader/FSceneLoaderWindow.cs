@@ -704,6 +704,11 @@ namespace Feeder
             row.RegisterCallback<PointerMoveEvent>(evt =>
             {
                 if (reorderNode != node) return;
+                if (!reordering && (evt.pressedButtons & 1) == 0)
+                {
+                    reorderNode = null;
+                    return;
+                }
                 if (!reordering)
                 {
                     if (Mathf.Abs(evt.position.y - reorderOrigin.y) < DragThreshold) return;
@@ -894,6 +899,7 @@ namespace Feeder
             tile.RegisterCallback<PointerUpEvent>(_ => pressed = false);
             tile.RegisterCallback<PointerMoveEvent>(evt =>
             {
+                if ((evt.pressedButtons & 1) == 0) pressed = false;
                 if (!pressed || (evt.position - origin).sqrMagnitude < DragThreshold * DragThreshold) return;
                 pressed = false;
                 StartSceneDrag(path);
